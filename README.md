@@ -36,7 +36,12 @@ You can find implemented approaches in the respective module, but we provide inf
 Autoscalers
 ===========
 
-**TODO**
+This autoscaler replicates the behavior of the [official Kubernetes Horizontal Pod Autoscaler](https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/).
+Originally, HPA only supported CPU-based scaling but has been extended to include various custom metrics.
+To this end, we implement different variants of this autoscalers.
+For example, we provide a HPA implementation that is CPU-based (`HCPA`) and one that takes the latency as metric (`HLPA`).
+
+You can find the base `HPA` class and both implementations in the `faasopts.autoscalers.k8s.hpa.global` module.
 
 Schedulers
 ==========
