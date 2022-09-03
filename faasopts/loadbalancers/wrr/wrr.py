@@ -2,15 +2,16 @@
 Basically all of this code stems from the jacob-thesis branch from the faas-sim project.
 Thanks, @jjnp for this implementation.
 """
+import abc
 import logging
 import math
 import statistics
-from collections import Counter
+from collections import defaultdict
 from typing import Dict, List, Callable
 
 import numpy as np
 from faas.context import PlatformContext, FunctionReplicaService, TraceService
-from faas.system import FunctionReplicaState, FunctionReplica
+from faas.system import FunctionReplicaState, FunctionReplica, Metrics
 from faas.system.loadbalancer import LocalizedLoadBalancer
 
 logger = logging.getLogger(__name__)
@@ -79,22 +80,109 @@ class LeastResponseTimeMetricProvider:
         return self.rts
 
 
+class WeightCalculator(abc.ABC):
+
+    def calculate_weights(self) -> Dict[str, Dict[str, float]]: ...
+
+    def update(self, function: str, replica_ids: List[str]): ...
+
+
+class LeastResponseTimeWeightCalculator(WeightCalculator):
+
+    def __init__(self, context: PlatformContext, now: Callable[[], float], scaling: float,
+                 lrt_window: float = 45,
+                 max_weight=100):
+        self.context = context
+        self.now = now
+        self.window = lrt_window
+        self.scaling = scaling
+        self.max_weight = max_weight
+        self.lrt_providers: Dict[str, LeastResponseTimeMetricProvider] = {}
+        self.weights: Dict[str, Dict[str, float]] = defaultdict(dict)
+
+    def update(self, function: str, replica_ids: List[str]):
+        self.lrt_providers[function] = LeastResponseTimeMetricProvider(self.context, self.now, replica_ids, self.window)
+
+    def calculate_weights(self) -> Dict[str, Dict[str, float]]:
+        fn_weights = {}
+        for function in self.lrt_providers.keys():
+
+            response_times = self.lrt_providers[function].get_response_times()
+            if len(response_times) < 1:
+                # fn_weights[function] = self.weights[function]
+                continue
+            else:
+                min_weight = min(response_times.values())
+                for r_id, rt in response_times.items():
+                    w = int(round(max(1.0, pow(10 / (rt / min_weight), self.scaling))))
+                    self.weights[function][r_id] = w
+                fn_weights[function] = self.weights[function]
+
+        return fn_weights
+
+class SmoothLrtWeightCalculator(WeightCalculator):
+
+    def __init__(self, context: PlatformContext, now: Callable[[], float], scaling: float,
+                 lrt_window: float = 45,
+                 max_weight=100):
+        self.context = context
+        self.max_weight = max_weight
+        self.now = now
+        self.window = lrt_window
+        self.scaling = scaling
+        self.max_weight = max_weight
+        self.lrt_providers: Dict[str, LeastResponseTimeMetricProvider] = {}
+        self.weights: Dict[str, Dict[str, float]] = defaultdict(dict)
+
+    def update(self, function: str, replica_ids: List[str]):
+        self.lrt_providers[function] = LeastResponseTimeMetricProvider(self.context, self.now, replica_ids, self.window)
+
+    def calculate_weights(self) -> Dict[str, Dict[str, float]]:
+        fn_weights = {}
+        for function_name in self.lrt_providers.keys():
+            weights = {}
+            response_times = self.lrt_providers[function_name].get_response_times()
+            if len(response_times) < 1:
+                continue
+            min_response_time = float(np.min(list(response_times.values())))
+
+            for r_id, rt in response_times.items():
+                weight = float(np.max([1, self.max_weight / math.pow((rt / min_response_time), self.scaling)]))
+                weights[r_id] = weight
+            fn_weights[function_name] = weights
+        return fn_weights
+
+class RoundRobinWeightCalculator(WeightCalculator):
+
+    def __init__(self):
+        self.functions = {}
+
+    def calculate_weights(self) -> Dict[str, Dict[str, float]]:
+        fn_weights = {}
+        for function in self.functions.keys():
+            weights = {}
+            for replica_id in self.functions[function]:
+                weights[replica_id] = 1
+            fn_weights[function] = weights
+        return fn_weights
+
+    def update(self, function: str, replica_ids: List[str]):
+        self.functions[function] = replica_ids
+
+
+
+
 class WrrUpdater(LocalizedLoadBalancer):
 
-    def __init__(self, context: PlatformContext, cluster: str, now: Callable[[], float], scaling: float,
-                 lrt_window: float = 45) -> None:
+    def __init__(self, context: PlatformContext, cluster: str, metrics: Metrics,
+                 weight_calculator: WeightCalculator) -> None:
         super().__init__(context, cluster)
-        self.now = now
-        self.scaling = scaling
-        self.count = Counter()
-        # lrt things
-        self.window = lrt_window
-        self.last_weight_update = -1
-        self.lrt_providers: Dict[str, LeastResponseTimeMetricProvider] = dict()
-        self.first = True
+        self.metrics = metrics
+        self.weight_calculator = weight_calculator
 
     def update(self):
         weights = self.calculate_weights()
+        self.metrics.log('wrr-weights', 'update', **weights)
         self.set_weights(weights)
 
     def set_weights(self, weights: Dict[str, Dict[str, float]]):
@@ -110,49 +198,8 @@ class WrrUpdater(LocalizedLoadBalancer):
             function_name = function.name
             replicas = self.get_running_replicas(function_name)
             replica_ids = self.get_running_replica_ids(replicas)
-            self.lrt_providers[function_name] = \
-                LeastResponseTimeMetricProvider(self.context, self.now, replica_ids, window=self.window)
+            self.weight_calculator.update(function_name, replica_ids)
 
     def calculate_weights(self) -> Dict[str, Dict[str, float]]:
         self._sync_replica_state()
-        fn_weights = {}
-        for function in self.get_functions():
-            weights = {}
-            function_name = function.name
-
-            response_times = self.lrt_providers[function_name].get_response_times()
-            if len(response_times) < 1:
-                continue
-            min_weight = min(response_times.values())
-            for r_id, rt in response_times.items():
-                w = int(round(max(1.0, pow(10 / (rt / min_weight), self.scaling))))
-                weights[r_id] = w
-            fn_weights[function_name] = weights
-        return fn_weights
-
-
-class SmoothWrrUpdater(WrrUpdater):
-
-    def __init__(self, context: PlatformContext, cluster: str, now: Callable[[], float], scaling: float,
-                 max_weight=100,
-                 lrt_window: float = 45, weight_update_frequency: float = 30) -> None:
-        super().__init__(context, cluster, now, scaling, lrt_window, weight_update_frequency)
-        self.max_weight = max_weight
-
-    def calculate_weights(self) -> Dict[str, Dict[str, float]]:
-        self._sync_replica_state()
-        fn_weights = {}
-        for function in self.get_functions():
-            weights = {}
-            function_name = function.name
-
-            response_times = self.lrt_providers[function_name].get_response_times()
-            if len(response_times) < 1:
-                continue
-            min_response_time = float(np.min(list(response_times.values())))
-
-            for r_id, rt in response_times.items():
-                weight = float(np.max([1, self.max_weight / math.pow((rt / min_response_time), self.scaling)]))
-                weights[r_id] = weight
-            fn_weights[function_name] = weights
-        return fn_weights
+        return self.weight_calculator.calculate_weights()
