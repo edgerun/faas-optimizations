@@ -2,7 +2,7 @@ import datetime
 import logging
 import math
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Callable
 
 import numpy as np
 from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService
@@ -39,7 +39,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
 
     def __init__(self, parameters: Dict[str, HorizontalLatencyPodAutoscalerParameters], ctx: PlatformContext,
                  faas: FaasSystem,
-                 metrics: Metrics, clock: Clock):
+                 metrics: Metrics, now: Callable[[], float]):
         """
         Initializes the HPA latency-based implementation
         :param parameters: HPA parameters per deployment that dictate various configuration values
@@ -51,7 +51,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
         self.ctx = ctx
         self.faas = faas
         self.metrics = metrics
-        self.clock = clock
+        self.now = now
 
     def run(self):
         """
@@ -105,8 +105,8 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             no_of_running_pods = len(running_pods)
             no_of_pending_pods = len(pending_pods)
             no_of_pods = no_of_running_pods + no_of_pending_pods
-            now = datetime.datetime.now()
-            lookback_seconds_ago = now - datetime.timedelta(seconds=spec.lookback)
+            now = self.now()
+            lookback_seconds_ago = now - spec.lookback
             logger.info(f"Fetch traces {spec.lookback} seconds ago")
             traces = trace_service.get_traces_for_function(deployment, lookback_seconds_ago, now)
             if len(traces) == 0:
@@ -192,7 +192,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 self.faas.scale_down(deployment.name, to_remove)
 
             record = {
-                's': self.clock.now(),
+                's': self.now(),
                 'fn': deployment.fn_name,
                 'duration_agg': duration_agg,
                 'target_duration': spec.target_duration,

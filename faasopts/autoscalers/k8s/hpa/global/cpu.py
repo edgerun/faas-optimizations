@@ -2,7 +2,7 @@ import datetime
 import logging
 import math
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, Callable
 
 import numpy as np
 import pandas as pd
@@ -42,7 +42,7 @@ class HorizontalCpuPodAutoscaler(BaseAutoscaler):
     """
 
     def __init__(self, parameters: Dict[str, HorizontalCpuPodAutoscalerParameters], ctx: PlatformContext, faas: FaasSystem,
-                 metrics: Metrics, clock: Clock):
+                 metrics: Metrics, now: Callable[[], float]):
         """
         Initializes the HPA CPU-based implementation
         :param parameters: HPA parameters per deployment that dictate various configuration values
@@ -54,7 +54,7 @@ class HorizontalCpuPodAutoscaler(BaseAutoscaler):
         self.ctx = ctx
         self.faas = faas
         self.metrics = metrics
-        self.clock = clock
+        self.now = now
 
     def setup(self):
         pass
@@ -110,8 +110,8 @@ class HorizontalCpuPodAutoscaler(BaseAutoscaler):
 
             missing_cpu = 0
             for pod in running_pods:
-                now = self.clock.now()
-                lookback_seconds_ago = now - datetime.timedelta(seconds=spec.lookback)
+                now = self.now()
+                lookback_seconds_ago = now - spec.lookback
                 cpu = telemetry_service.get_replica_cpu(pod.container_id, lookback_seconds_ago, now)
                 if cpu is None or len(cpu) == 0:
                     missing_cpu += 1
