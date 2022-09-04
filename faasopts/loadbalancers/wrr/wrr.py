@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 
 
 class LeastResponseTimeMetricProvider:
-    def __init__(self, context: PlatformContext, now: Callable[[], float], replica_ids: List[str],
+    def __init__(self, function: str, context: PlatformContext, now: Callable[[], float], replica_ids: List[str],
                  window: float = 10.0):
+        self.function = function
         self.context = context
         self.now = now
         self.trace_service: TraceService = context.trace_service
@@ -67,24 +68,42 @@ class LeastResponseTimeMetricProvider:
     def get_response_times(self) -> Dict[str, float]:
         for replica_id in self.replica_ids:
             replica = self.replica_service.get_function_replica_by_id(replica_id)
-            traces = self.trace_service.get_traces_for_function_image(
-                function=replica.fn_name,
-                function_image=replica.container.image,
-                response_status=200,
-                start=self.now() - self.window,
-                end=self.now()
-            )
-            if traces is None or len(traces) == 0:
-                continue
-            traces = traces.sort_values(by='ts', ascending=False)
-            newest_trace = traces.iloc[0]
-            self.record_response_time(replica_id, newest_trace['rtt'], newest_trace['ts'])
+            if replica.labels[pod_type_label] == function_type_label:
+                traces = self.trace_service.get_traces_for_function_image(
+                    function=replica.fn_name,
+                    function_image=replica.container.image,
+                    response_status=200,
+                    start=self.now() - self.window,
+                    end=self.now()
+                )
+                if traces is None or len(traces) == 0:
+                    continue
+                traces = traces.sort_values(by='ts', ascending=False)
+                traces = traces[traces['replica_id'] == replica_id]
+                if len(traces) == 0:
+                    continue
+                else:
+                    newest_trace = traces.iloc[0]
+                    self.record_response_time(replica_id, newest_trace['rtt'], newest_trace['ts'])
+            if replica.labels[pod_type_label] == api_gateway_type_label:
+                try:
+                    traces = self.trace_service.get_traces_api_gateway(replica.node.name, self.now() - self.window,
+                                                                       self.now(), 200)
+                    traces = traces[traces['function'] == self.function]
+                    if len(traces) == 0:
+                        continue
+                    else:
+                        # in case it's an API gateway, we want to aggregate over all instances behind it
+                        for idx, row  in traces.iterrows():
+                            self.record_response_time(replica_id, row['rtt'], row['ts'])
+                except Exception as e:
+                    logger.error(e)
         return self.rts
 
     def contains(self, replica_id: str):
         try:
-             self.replica_ids.index(replica_id)
-             return True
+            self.replica_ids.index(replica_id)
+            return True
         except ValueError:
             return False
 
@@ -103,6 +122,10 @@ class WeightCalculator(abc.ABC):
 
     def remove_replicas(self, function: str, replicas: List[FunctionReplica]): ...
 
+    def get_replicas_ids(self, function: str) -> List[str]: ...
+
+    def manages_functions(self, function: str) -> bool:  ...
+
 
 class LeastResponseTimeWeightCalculator(WeightCalculator):
 
@@ -114,11 +137,12 @@ class LeastResponseTimeWeightCalculator(WeightCalculator):
         self.window = lrt_window
         self.scaling = scaling
         self.max_weight = max_weight
+        self.lock = ReadWriteLock()
         self.lrt_providers: Dict[str, LeastResponseTimeMetricProvider] = {}
         self.weights: Dict[str, Dict[str, float]] = defaultdict(dict)
 
     def update(self, function: str, replica_ids: List[str]):
-        self.lrt_providers[function] = LeastResponseTimeMetricProvider(self.context, self.now, replica_ids, self.window)
+        self.lrt_providers[function] = LeastResponseTimeMetricProvider(function, self.context, self.now, replica_ids, self.window)
 
     def calculate_weights(self) -> Dict[str, Dict[str, float]]:
         fn_weights = {}
@@ -138,11 +162,21 @@ class LeastResponseTimeWeightCalculator(WeightCalculator):
         return fn_weights
 
     def add_replica(self, function: str, replica: FunctionReplica):
-        if not self.lrt_providers[function].contains(replica.replica_id):
-            self.lrt_providers[function].add_replica(replica.replica_id)
+        with self.lock.lock.gen_wlock():
+            if self.lrt_providers.get(function) is None:
+                self.lrt_providers[function] = LeastResponseTimeMetricProvider(function, self.context, self.now,
+                                                                               [replica.replica_id],
+                                                                               self.window)
+            else:
+                self.lrt_providers[function].add_replica(replica.replica_id)
 
     def remove_replica(self, function: str, replica: FunctionReplica):
-        self.lrt_providers[function].remove_replica(replica.replica_id)
+        with self.lock.lock.gen_wlock():
+            if self.lrt_providers.get(function) is None:
+                self.lrt_providers[function] = LeastResponseTimeMetricProvider(function, self.context, self.now,
+                                                                               [], self.window)
+            else:
+                self.lrt_providers[function].remove_replica(replica.replica_id)
 
     def add_replicas(self, function: str, replicas: List[FunctionReplica]):
         for replica in replicas:
@@ -151,6 +185,14 @@ class LeastResponseTimeWeightCalculator(WeightCalculator):
     def remove_replicas(self, function: str, replicas: List[FunctionReplica]):
         for replica in replicas:
             self.remove_replica(function, replica)
+
+    def get_replicas_ids(self, function: str) -> List[str]:
+        return list(self.weights[function].keys())
+
+    def manages_functions(self, function: str) -> bool:
+        return self.weights.get(function) is not None
+
+
 
 
 class SmoothLrtWeightCalculator(WeightCalculator):
@@ -169,7 +211,7 @@ class SmoothLrtWeightCalculator(WeightCalculator):
         self.weights: Dict[str, Dict[str, float]] = defaultdict(dict)
 
     def update(self, function: str, replica_ids: List[str]):
-        self.lrt_providers[function] = LeastResponseTimeMetricProvider(self.context, self.now, replica_ids, self.window)
+        self.lrt_providers[function] = LeastResponseTimeMetricProvider(function, self.context, self.now, replica_ids, self.window)
 
     def calculate_weights(self) -> Dict[str, Dict[str, float]]:
         fn_weights = {}
@@ -184,12 +226,13 @@ class SmoothLrtWeightCalculator(WeightCalculator):
                 weight = float(np.max([1, self.max_weight / math.pow((rt / min_response_time), self.scaling)]))
                 weights[r_id] = weight
             fn_weights[function_name] = weights
+        self.weights = fn_weights
         return fn_weights
 
     def add_replica(self, function: str, replica: FunctionReplica):
         with self.lock.lock.gen_wlock():
             if self.lrt_providers.get(function) is None:
-                self.lrt_providers[function] = LeastResponseTimeMetricProvider(self.context, self.now,
+                self.lrt_providers[function] = LeastResponseTimeMetricProvider(function, self.context, self.now,
                                                                                [replica.replica_id],
                                                                                self.window)
             else:
@@ -198,7 +241,7 @@ class SmoothLrtWeightCalculator(WeightCalculator):
     def remove_replica(self, function: str, replica: FunctionReplica):
         with self.lock.lock.gen_wlock():
             if self.lrt_providers.get(function) is None:
-                self.lrt_providers[function] = LeastResponseTimeMetricProvider(self.context, self.now,
+                self.lrt_providers[function] = LeastResponseTimeMetricProvider(function, self.context, self.now,
                                                                                [], self.window)
             else:
                 self.lrt_providers[function].remove_replica(replica.replica_id)
@@ -211,12 +254,18 @@ class SmoothLrtWeightCalculator(WeightCalculator):
         for replica in replicas:
             self.remove_replica(function, replica)
 
+    def get_replicas_ids(self, function: str) -> List[str]:
+        return list(self.weights[function].keys())
+
+    def manages_functions(self, function: str) -> bool:
+        return self.weights.get(function) is not None
 
 
 class RoundRobinWeightCalculator(WeightCalculator):
 
     def __init__(self):
-        self.functions: Dict[str, List[str]] = {}
+        self.functions: Dict[str, List[str]] = defaultdict(list)
+        self.weights : Dict[str, List[str]]= defaultdict(list)
 
     def calculate_weights(self) -> Dict[str, Dict[str, float]]:
         fn_weights = {}
@@ -225,6 +274,7 @@ class RoundRobinWeightCalculator(WeightCalculator):
             for replica_id in self.functions[function]:
                 weights[replica_id] = 1
             fn_weights[function] = weights
+        self.weights = fn_weights
         return fn_weights
 
     def update(self, function: str, replica_ids: List[str]):
@@ -244,6 +294,12 @@ class RoundRobinWeightCalculator(WeightCalculator):
         for replica in replicas:
             self.remove_replica(function, replica)
 
+    def get_replicas_ids(self, function: str) -> List[str]:
+        return list(self.weights[function])
+
+    def manages_functions(self, function: str) -> bool:
+        return self.weights.get(function) is not None
+
 
 class WrrOptimizer(LocalizedLoadBalancerOptimizer):
 
@@ -255,7 +311,7 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
 
     def update(self):
         weights = self.calculate_weights()
-        self.metrics.log('wrr-weights', 'update', **weights)
+        self.metrics.log('wrr-weights', self.cluster, **weights)
         self.set_weights(weights)
 
     def _get_function(self, replica: FunctionReplica) -> List[Tuple[str, FunctionReplica]]:
@@ -276,6 +332,8 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
                                                                                            node_labels=node_labels,
                                                                                            state=FunctionReplicaState.RUNNING)
                 # we assume that only one load balancer runs per cluster
+                if len(replicas) == 0:
+                    return []
                 lb_replica = replicas[0]
                 return [(replica.function.name, lb_replica)]
             else:
@@ -324,8 +382,25 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
         for function in managed_functions:
             function_name = function.name
             replicas = self.get_running_replicas(function_name)
-            replica_ids = self.get_running_replica_ids(replicas)
-            self.weight_calculator.update(function_name, replica_ids)
+            if not self.weight_calculator.manages_functions(function_name):
+                replica_ids = self.get_running_replica_ids(replicas)
+                self.weight_calculator.update(function_name, replica_ids)
+            else:
+                try:
+                    current_replica_ids = self.get_running_replica_ids(replicas)
+                    weight_calculator_replica_ids = self.weight_calculator.get_replicas_ids(function_name)
+                    if not set(current_replica_ids) == set(weight_calculator_replica_ids):
+                        for replica in replicas:
+                            # A new replica as added
+                            if replica.replica_id not in weight_calculator_replica_ids:
+                                self.weight_calculator.add_replica(function_name, replica)
+                        for r_id in weight_calculator_replica_ids:
+                            # A replica was removed
+                            if r_id not in current_replica_ids:
+                                replica = self.context.replica_service.get_function_replica_by_id(r_id)
+                                self.weight_calculator.remove_replica(function_name, replica)
+                except Exception as e:
+                    logger.error(e)
 
     def calculate_weights(self) -> Dict[str, Dict[str, float]]:
         self._sync_replica_state()
