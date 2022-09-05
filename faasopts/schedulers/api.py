@@ -1,4 +1,4 @@
-from faasopts.api import Optimizer
+from faas.opt.api import Optimizer
 
 
 class BaseScheduler(Optimizer):
