@@ -2,11 +2,11 @@ import datetime
 import logging
 import math
 from dataclasses import dataclass
-from typing import Dict, Callable
+from typing import Dict, Callable, Union, List
 
 import numpy as np
 from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService
-from faas.system import FaasSystem, Metrics, FunctionReplicaState, Clock
+from faas.system import FaasSystem, Metrics, FunctionReplicaState, Clock, FunctionReplica
 
 from faasopts.autoscalers.api import BaseAutoscaler
 
@@ -177,7 +177,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     desired_replicas = scale_max
 
                 scale_up_containers = desired_replicas - no_of_pods
-                self.faas.scale_up(deployment.name, scale_up_containers)
+                self.scale_up(deployment.name, scale_up_containers)
 
 
             else:
@@ -189,7 +189,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 # TODO: include pending pods, can lead to issues if too many pods
                 #  are pending and not enoguh pods are running to remove
                 to_remove = running_pods[no_of_running_pods - scale_down_containers:]
-                self.faas.scale_down(deployment.name, to_remove)
+                self.scale_down(deployment.name, to_remove)
 
             record = {
                 's': self.now(),
@@ -203,3 +203,9 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 'percentile': spec.percentile_duration
             }
             self.metrics.log('hlpa-decision', desired_replicas, **record)
+
+    def scale_down(self, function: str, remove: Union[int, List[FunctionReplica]]):
+        self.faas.scale_down(function, remove)
+
+    def scale_up(self, function: str, add: Union[int, List[FunctionReplica]]):
+        self.faas.scale_up(function, add)
