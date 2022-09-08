@@ -315,7 +315,7 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
         self.set_weights(weights)
 
     def _get_function(self, replica: FunctionReplica) -> List[Tuple[str, FunctionReplica]]:
-        if replica.state != FunctionReplicaState.RUNNING:
+        if replica.state is not FunctionReplicaState.RUNNING:
             return []
         if replica.labels.get(pod_type_label) is None:
             return []
