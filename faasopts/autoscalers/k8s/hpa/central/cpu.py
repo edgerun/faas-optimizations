@@ -321,7 +321,8 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
 
                 # choose the last added containers
                 to_remove = running_replica[no_of_running_replicas - scale_down_containers:]
-                self.scale_down(deployment.fn.name, to_remove)
+                if len(to_remove) > 0:
+                    self.scale_down(deployment.fn.name, to_remove)
 
             record = {
                 'fn': deployment.name,
