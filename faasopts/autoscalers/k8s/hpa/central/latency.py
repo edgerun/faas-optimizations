@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from typing import Dict, Callable, Union, List
 
 import numpy as np
-from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService
+from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService, \
+    ResponseRepresentation
 from faas.system import FaasSystem, Metrics, FunctionReplicaState, Clock, FunctionReplica
 
 from faasopts.autoscalers.api import BaseAutoscaler
@@ -95,24 +96,30 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
         trace_service: TraceService = self.ctx.trace_service
 
         for deployment in deployment_service.get_deployments():
-            logger.info(f'HLPA scaling for function {deployment.fn_name}')
-            spec = self.parameters.get(deployment.fn_name, None)
+            logger.info(f'HLPA scaling for function {deployment.name}')
+            spec = self.parameters.get(deployment.name, None)
             if spec is None:
                 continue
-            running_pods = replica_service.get_function_replicas_of_deployment(deployment.original_name)
-            pending_pods = replica_service.get_function_replicas_of_deployment(deployment.original_name, running=False,
+
+            def access(r: ResponseRepresentation):
+                return r.__dict__[spec.target_time_measure]
+
+            running_pods = replica_service.get_function_replicas_of_deployment(deployment.name)
+            pending_pods = replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
                                                                                state=FunctionReplicaState.PENDING)
-            no_of_running_pods = len(running_pods)
-            no_of_pending_pods = len(pending_pods)
+            no_of_running_pods = len(running_pods) if running_pods is not None else 0
+            no_of_pending_pods = len(pending_pods) if pending_pods is not None else 0
             no_of_pods = no_of_running_pods + no_of_pending_pods
             now = self.now()
             lookback_seconds_ago = now - spec.lookback
+            if lookback_seconds_ago < 0:
+                lookback_seconds_ago = 0
             logger.info(f"Fetch traces {spec.lookback} seconds ago")
-            traces = trace_service.get_traces_for_function(deployment, lookback_seconds_ago, now)
-            if len(traces) == 0:
-                logger.info(f'No trace data for function: {deployment.fn_name}, skip iteration')
+            traces = trace_service.get_values_for_function(deployment.name, lookback_seconds_ago, now, access)
+            if traces is None or len(traces) == 0:
+                logger.info(f'No trace data for function: {deployment.name}, skip iteration')
                 record = {
-                    'fn': deployment.fn_name,
+                    'fn': deployment.name,
                     'duration_agg': -1,
                     'target_duration': spec.target_duration,
                     'percentile': spec.percentile_duration,
@@ -124,12 +131,9 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 self.metrics.log('hlpa-decision', no_of_pods, **record)
                 continue
 
-            if spec.target_time_measure == 'rtt':
-                traces[spec.target_time_measure] = traces[spec.target_time_measure] * 1000
-
             # percentile of rtt over all traces
-            duration_agg = np.percentile(q=spec.percentile_duration, a=traces[spec.target_time_measure])
-            mean = np.mean(a=traces[spec.target_time_measure])
+            duration_agg = np.percentile(q=spec.percentile_duration, a=traces)
+            mean = np.mean(a=traces)
             base_scale_ratio = duration_agg / spec.target_duration
             logger.info(
                 f"Base scale ratio: {base_scale_ratio}."
@@ -139,7 +143,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     f'{spec.target_time_measure} percentile ({duration_agg}) was close enough to target ({spec.target_duration}) '
                     f'with a tolerance of {spec.threshold_tolerance}')
                 record = {
-                    'fn': deployment.fn_name,
+                    'fn': deployment.name,
                     'duration_agg': duration_agg,
                     'target_duration': spec.target_duration,
                     'base_scale_ratio': base_scale_ratio,
@@ -153,9 +157,9 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
 
             desired_replicas = math.ceil(no_of_running_pods * (base_scale_ratio))
             if desired_replicas == no_of_running_pods:
-                logger.info(f"No scaling actions necessary for {deployment.fn_name}")
+                logger.info(f"No scaling actions necessary for {deployment.name}")
                 record = {
-                    'fn': deployment.fn_name,
+                    'fn': deployment.name,
                     'duration_agg': duration_agg,
                     'target_duration': spec.target_duration,
                     'base_scale_ratio': base_scale_ratio,
@@ -193,7 +197,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
 
             record = {
                 's': self.now(),
-                'fn': deployment.fn_name,
+                'fn': deployment.name,
                 'duration_agg': duration_agg,
                 'target_duration': spec.target_duration,
                 'base_scale_ratio': base_scale_ratio,
