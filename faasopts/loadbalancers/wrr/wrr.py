@@ -216,16 +216,26 @@ class SmoothLrtWeightCalculator(WeightCalculator):
     def calculate_weights(self) -> Dict[str, Dict[str, float]]:
         fn_weights = {}
         for function_name in self.lrt_providers.keys():
+            print("1")
             weights = {}
             response_times = self.lrt_providers[function_name].get_response_times()
             if len(response_times) < 1:
-                continue
-            min_response_time = float(np.min(list(response_times.values())))
-
-            for r_id, rt in response_times.items():
-                weight = float(np.max([1, self.max_weight / math.pow((rt / min_response_time), self.scaling)]))
-                weights[r_id] = weight
+                print("2")
+                # continue
+                min_response_time = 1
+                replica_ids = self.get_replicas_ids(function_name)
+                for replica_id in replica_ids:
+                    weights[replica_id] = 1
+            else:
+                min_response_time = float(np.min(list(response_times.values())))
+                
+                for r_id, rt in response_times.items():
+                    print("3")
+                    weight = float(np.max([1, self.max_weight / math.pow((rt / min_response_time), self.scaling)]))
+                    weights[r_id] = weight
+                    
             fn_weights[function_name] = weights
+        print("4")
         self.weights = fn_weights
         return fn_weights
 
@@ -311,6 +321,7 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
 
     def update(self):
         weights = self.calculate_weights()
+        print(weights)
         self.metrics.log('wrr-weights', self.cluster, **weights)
         self.set_weights(weights)
 
