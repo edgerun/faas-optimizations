@@ -318,6 +318,7 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
         super().__init__(context, cluster)
         self.metrics = metrics
         self.weight_calculator = weight_calculator
+        context.replica_service.register(self.observer)
 
     def update(self):
         weights = self.calculate_weights()
