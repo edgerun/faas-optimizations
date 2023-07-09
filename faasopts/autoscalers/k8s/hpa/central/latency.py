@@ -6,8 +6,9 @@ from typing import Dict, Callable, Union, List
 
 import numpy as np
 from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService, \
-    ResponseRepresentation
+    ResponseRepresentation, FunctionReplicaFactory
 from faas.system import FaasSystem, Metrics, FunctionReplicaState, Clock, FunctionReplica
+from faas.util.constant import zone_label, worker_role_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
 
@@ -40,19 +41,26 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
 
     def __init__(self, parameters: Dict[str, HorizontalLatencyPodAutoscalerParameters], ctx: PlatformContext,
                  faas: FaasSystem,
-                 metrics: Metrics, now: Callable[[], float]):
+                 metrics: Metrics, now: Callable[[], float], cluster: str = None,
+                 replica_factory: FunctionReplicaFactory = None):
         """
         Initializes the HPA latency-based implementation
         :param parameters: HPA parameters per deployment that dictate various configuration values
         :param ctx: the HPA will get any information (i.e., monitoring data) from the context
         :param faas: the system will be invoked when scaling in our out
         :param metrics: is used to log any scaling decisions for later analysis
+        :param cluster: if set, only looks at replica that reside in the given cluster (ether.edgerun.io/zone label)
+        :param replica_factory: if cluster argument is passed, this replica_factory will be used to create replicas with an appropriate set node selector
         """
         self.parameters = parameters
         self.ctx = ctx
         self.faas = faas
         self.metrics = metrics
         self.now = now
+        self.cluster = cluster
+        self.replica_factory = replica_factory
+        if cluster and not replica_factory:
+            raise AttributeError('Replica Factory must be set when given cluster.')
 
     def run(self):
         """
@@ -107,6 +115,11 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             running_pods = replica_service.get_function_replicas_of_deployment(deployment.name)
             pending_pods = replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
                                                                                state=FunctionReplicaState.PENDING)
+
+            if self.cluster is not None:
+                running_pods = [x for x in running_pods if x.labels[zone_label] == self.cluster]
+                pending_pods = [x for x in pending_pods if x.labels[zone_label] == self.cluster]
+
             no_of_running_pods = len(running_pods) if running_pods is not None else 0
             no_of_pending_pods = len(pending_pods) if pending_pods is not None else 0
             no_of_pods = no_of_running_pods + no_of_pending_pods
@@ -115,7 +128,12 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             if lookback_seconds_ago < 0:
                 lookback_seconds_ago = 0
             logger.info(f"Fetch traces {spec.lookback} seconds ago")
-            traces = trace_service.get_values_for_function(deployment.name, lookback_seconds_ago, now, access)
+
+            if self.cluster is not None:
+                traces = trace_service.get_values_for_function(deployment.name, lookback_seconds_ago, now, access,
+                                                               zone=self.cluster)
+            else:
+                traces = trace_service.get_values_for_function(deployment.name, lookback_seconds_ago, now, access)
             if traces is None or len(traces) == 0:
                 logger.info(f'No trace data for function: {deployment.name}, skip iteration')
                 record = {
@@ -128,6 +146,9 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     'pending_pods': no_of_pending_pods,
                     'threshold_tolerance': spec.threshold_tolerance,
                 }
+
+                if self.cluster:
+                    record['cluster'] = self.cluster
                 self.metrics.log('hlpa-decision', no_of_pods, **record)
                 continue
 
@@ -152,6 +173,9 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     'percentile': spec.percentile_duration,
                     'threshold_tolerance': spec.threshold_tolerance,
                 }
+
+                if self.cluster:
+                    record['cluster'] = self.cluster
                 self.metrics.log('hlpa-decision', no_of_pods, **record)
                 continue
 
@@ -168,6 +192,9 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     'percentile': spec.percentile_duration,
                     'threshold_tolerance': spec.threshold_tolerance,
                 }
+
+                if self.cluster:
+                    record['cluster'] = self.cluster
                 self.metrics.log('hlpa-decision', desired_replicas, **record)
                 continue
             logger.info(f"Scale to {desired_replicas} from {no_of_running_pods} without "
@@ -180,8 +207,16 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 if scale_max is not None and desired_replicas > scale_max:
                     desired_replicas = scale_max
 
-                scale_up_containers = desired_replicas - no_of_pods
-                self.scale_up(deployment.name, scale_up_containers)
+                scale_up_replicas_no = desired_replicas - no_of_pods
+                scale_up_replicas = scale_up_replicas_no
+                if self.cluster:
+                    scale_up_replicas = []
+                    for i in range(scale_up_replicas_no):
+                        replica = self.replica_factory.create_replica(
+                            {worker_role_label: 'true', zone_label: self.cluster},
+                            deployment.deployment_ranking.get_first(), deployment)
+                        scale_up_replicas.append(replica)
+                self.scale_up(deployment.name, scale_up_replicas)
 
 
             else:
@@ -206,6 +241,9 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 'threshold_tolerance': spec.threshold_tolerance,
                 'percentile': spec.percentile_duration
             }
+
+            if self.cluster:
+                record['cluster'] = self.cluster
             self.metrics.log('hlpa-decision', desired_replicas, **record)
 
     def scale_down(self, function: str, remove: Union[int, List[FunctionReplica]]):

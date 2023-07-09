@@ -6,8 +6,10 @@ from typing import Dict, Callable, List, Union
 
 import numpy as np
 import pandas as pd
-from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TelemetryService
+from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TelemetryService, \
+    FunctionReplicaFactory
 from faas.system import FaasSystem, Metrics, FunctionReplicaState, FunctionDeployment, FunctionReplica
+from faas.util.constant import zone_label, worker_role_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
 
@@ -40,19 +42,26 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
     """
 
     def __init__(self, parameters: Dict[str, HorizontalCpuReplicaAutoscalerParameters], ctx: PlatformContext,
-                 faas: FaasSystem, metrics: Metrics, now: Callable[[], float]):
+                 faas: FaasSystem, metrics: Metrics, now: Callable[[], float], cluster: str = None,
+                 replica_factory: FunctionReplicaFactory = None):
         """
         Initializes the HPA CPU-based implementation
         :param parameters: HPA parameters per deployment that dictate various configuration values
         :param ctx: the HPA will get any information (i.e., monitoring data) from the context
         :param faas: the system will be invoked when scaling in our out
         :param metrics: is used to log any scaling decisions for later analysis
+        :param cluster: if set, only looks at replica that reside in the given cluster (ether.edgerun.io/zone label)
+        :param replica_factory: if cluster argument is passed, this replica_factory will be used to create replicas with an appropriate set node selector
         """
         self.parameters = parameters
         self.ctx = ctx
         self.faas = faas
         self.metrics = metrics
         self.now = now
+        self.cluster = cluster
+        self.replica_factory = replica_factory
+        if cluster and not replica_factory:
+            raise AttributeError('Replica Factory must be set when given cluster.')
 
     def setup(self):
         pass
@@ -100,6 +109,10 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
             running_replica = replica_service.get_function_replicas_of_deployment(deployment.name)
             pending_replica = replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
                                                                                   state=FunctionReplicaState.PENDING)
+            if self.cluster is not None:
+                running_replica = [x for x in running_replica if x.labels[zone_label] == self.cluster]
+                pending_replica = [x for x in pending_replica if x.labels[zone_label] == self.cluster]
+
             no_of_running_replicas = len(running_replica)
             no_of_pending_replicas = len(pending_replica)
             no_of_replicas = no_of_running_replicas + no_of_pending_replicas
@@ -131,6 +144,9 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
                     'missing_cpu': missing_cpu,
                     'threshold_tolerance': spec.threshold_tolerance,
                 }
+
+                if self.cluster:
+                    record['cluster'] = self.cluster
                 self.metrics.log('hcpa-decision', no_of_replicas, **record)
                 continue
 
@@ -157,6 +173,9 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
                     'missing_cpu': missing_cpu,
                     'threshold_tolerance': spec.threshold_tolerance,
                 }
+
+                if self.cluster:
+                    record['cluster'] = self.cluster
                 self.metrics.log('hcpa-decision', no_of_replicas, **record)
                 continue
 
@@ -174,6 +193,9 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
                     'missing_cpu': missing_cpu,
                     'threshold_tolerance': spec.threshold_tolerance,
                 }
+
+                if self.cluster:
+                    record['cluster'] = self.cluster
                 self.metrics.log('hcpa-decision', no_of_replicas, **record)
                 continue
 
@@ -221,6 +243,9 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
                         'missing_cpu': missing_cpu,
                         'threshold_tolerance': spec.threshold_tolerance,
                     }
+
+                    if self.cluster:
+                        record['cluster'] = self.cluster
                     self.metrics.log('hcpa-decision', recalculated_desired_replicas, **record)
                     continue
 
@@ -238,6 +263,9 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
                         'missing_cpu': missing_cpu,
                         'threshold_tolerance': spec.threshold_tolerance,
                     }
+
+                    if self.cluster:
+                        record['cluster'] = self.cluster
                     self.metrics.log('hcpa-decision', recalculated_desired_replicas, **record)
                     continue
 
@@ -246,8 +274,16 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
                 if scale_max is not None and recalculated_desired_replicas > scale_max:
                     recalculated_desired_replicas = scale_max
 
-                scale_up_containers = recalculated_desired_replicas - no_of_replicas
-                yield from self.scale_up(deployment.name, scale_up_containers)
+                scale_up_replicas_no = recalculated_desired_replicas - no_of_replicas
+                scale_up_replicas = scale_up_replicas_no
+                if self.cluster:
+                    scale_up_replicas = []
+                    for i in range(scale_up_replicas_no):
+                        replica = self.replica_factory.create_replica(
+                            {worker_role_label: 'true', zone_label: self.cluster},
+                            deployment.deployment_ranking.get_first(), deployment)
+                        scale_up_replicas.append(replica)
+                self.scale_up(deployment.name, scale_up_replicas)
 
             else:
                 logger.info("Scale down")
@@ -292,6 +328,9 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
                         'missing_cpu': missing_cpu,
                         'threshold_tolerance': spec.threshold_tolerance,
                     }
+
+                    if self.cluster:
+                        record['cluster'] = self.cluster
                     self.metrics.log('hcpa-decision', recalculated_desired_replicas, **record)
                     continue
 
@@ -309,6 +348,9 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
                         'missing_cpu': missing_cpu,
                         'threshold_tolerance': spec.threshold_tolerance,
                     }
+
+                    if self.cluster:
+                        record['cluster'] = self.cluster
                     self.metrics.log('hcpa-decision', recalculated_desired_replicas, **record)
                     continue
 
@@ -335,6 +377,9 @@ class HorizontalCpuReplicaAutoscaler(BaseAutoscaler):
                 'missing_cpu': missing_cpu,
                 'threshold_tolerance': spec.threshold_tolerance,
             }
+
+            if self.cluster:
+                record['cluster'] = self.cluster
             self.metrics.log('hcpa-decision', recalculated_desired_replicas, **record)
 
     def stop(self):
