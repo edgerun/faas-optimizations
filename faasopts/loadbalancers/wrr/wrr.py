@@ -42,9 +42,12 @@ class LeastResponseTimeMetricProvider:
             self.rts[replica_id] = 0.05
 
     def remove_replica(self, replica_id: str):
-        self.replica_ids.remove(replica_id)
-        del self.rts[replica_id]
-        del self.last_record_timestamps[replica_id]
+        try:
+            self.replica_ids.remove(replica_id)
+            del self.rts[replica_id]
+            del self.last_record_timestamps[replica_id]
+        except KeyError as e:
+            logger.warning(f'Wanted to delete {replica_id} but was not present.', e)
 
     def _init_values(self):
         for r in self.replica_ids:
@@ -216,26 +219,23 @@ class SmoothLrtWeightCalculator(WeightCalculator):
     def calculate_weights(self) -> Dict[str, Dict[str, float]]:
         fn_weights = {}
         for function_name in self.lrt_providers.keys():
-            print("1")
             weights = {}
             response_times = self.lrt_providers[function_name].get_response_times()
             if len(response_times) < 1:
-                print("2")
                 # continue
                 min_response_time = 1
                 replica_ids = self.get_replicas_ids(function_name)
+
                 for replica_id in replica_ids:
                     weights[replica_id] = 1
             else:
                 min_response_time = float(np.min(list(response_times.values())))
                 
                 for r_id, rt in response_times.items():
-                    print("3")
                     weight = float(np.max([1, self.max_weight / math.pow((rt / min_response_time), self.scaling)]))
                     weights[r_id] = weight
                     
             fn_weights[function_name] = weights
-        print("4")
         self.weights = fn_weights
         return fn_weights
 
@@ -322,7 +322,6 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
 
     def update(self):
         weights = self.calculate_weights()
-        print(weights)
         self.metrics.log('wrr-weights', self.cluster, **weights)
         self.set_weights(weights)
 
@@ -412,7 +411,7 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
                                 replica = self.context.replica_service.get_function_replica_by_id(r_id)
                                 self.weight_calculator.remove_replica(function_name, replica)
                 except Exception as e:
-                    logger.error(e)
+                    logger.error('something went wrong syncing', e)
 
     def calculate_weights(self) -> Dict[str, Dict[str, float]]:
         self._sync_replica_state()
