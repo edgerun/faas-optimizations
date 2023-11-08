@@ -31,7 +31,7 @@ class HorizontalLatencyPodAutoscalerParameters:
     percentile_duration: float = 90
 
 
-class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
+class DistributedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
     """
     This Optimizer implementation is based on the official default Kubernetes HPA and uses latency to determine
     the number of replicas.
@@ -106,10 +106,9 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
         for deployment in deployment_service.get_deployments():
             logger.info(f'HLPA scaling for function {deployment.name}')
             spec = self.parameters.get(deployment.name, None)
-            logger.info(f'for deployment {deployment.name} found following spec {spec}')
             if spec is None:
                 continue
-            logger.info(f'Deployment passed if check {deployment.name}')
+
             def access(r: ResponseRepresentation):
                 return r.__dict__[spec.target_time_measure]
 
@@ -138,10 +137,12 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             logger.info(f"Fetch traces {spec.lookback} seconds ago")
 
             if self.cluster is not None:
-                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now, access,
-                                                               zone=self.cluster)
+                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now,
+                                                                       access,
+                                                                       zone=self.cluster)
             else:
-                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now, access)
+                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now,
+                                                                       access)
             if traces is None or len(traces) == 0:
                 logger.info(f'No trace data for function: {deployment.name}, skip iteration')
                 record = {
@@ -260,11 +261,11 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 # choose the last added containers
                 # TODO: include pending pods, can lead to issues if too many pods
                 #  are pending and not enoguh pods are running to remove
-                all_pods = conceiving_pods + pending_pods + running_pods
+                all_pods = running_pods + pending_pods + conceiving_pods
                 to_remove = all_pods[no_of_pods - scale_down_containers:]
                 if len(to_remove) > 0:
-                    if len(to_remove) > int(no_of_running_pods * 0.2):
-                        delete_length = len(to_remove) - int(no_of_running_pods * 0.2)
+                    if len(to_remove) > 20:
+                        delete_length = len(to_remove) - 20
                         to_remove = to_remove[delete_length:]
                     self.scale_down(deployment.name, to_remove)
 

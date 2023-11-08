@@ -12,7 +12,7 @@ from typing import Dict, List, Callable, Tuple
 import numpy as np
 from faas.context import PlatformContext, FunctionReplicaService, TraceService
 from faas.system import FunctionReplicaState, FunctionReplica, Metrics
-from faas.system.loadbalancer import LocalizedLoadBalancerOptimizer
+from faas.system.loadbalancer import LocalizedLoadBalancerOptimizer, GlobalLoadBalancerOptimizer
 from faas.util.constant import pod_type_label, function_type_label, api_gateway_type_label, zone_label
 from faas.util.rwlock import ReadWriteLock
 
@@ -46,8 +46,8 @@ class LeastResponseTimeMetricProvider:
             self.replica_ids.remove(replica_id)
             del self.rts[replica_id]
             del self.last_record_timestamps[replica_id]
-        except KeyError as e:
-            logger.warning(f'Wanted to delete {replica_id} but was not present.', e)
+        except (KeyError, ValueError) as e:
+            logger.warning(f'Wanted to delete {replica_id} but was not present. {e}')
 
     def _init_values(self):
         for r in self.replica_ids:
@@ -55,7 +55,7 @@ class LeastResponseTimeMetricProvider:
             self.last_record_timestamps[r] = -1
 
     def record_response_time(self, replica_id: str, new_response_time: float, new_ts):
-        if replica_id not in self.replica_ids:
+        if replica_id not in self.replica_ids or replica_id not in self.last_record_timestamps:
             return
         last_record_timestamp = self.last_record_timestamps[replica_id]
         if last_record_timestamp == -1:
@@ -318,7 +318,7 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
         super().__init__(context, cluster)
         self.metrics = metrics
         self.weight_calculator = weight_calculator
-        context.replica_service.register(self.observer)
+        # context.replica_service.register(self.observer)
 
     def update(self):
         weights = self.calculate_weights()
@@ -370,6 +370,84 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
                 functions.add(replica.fn_name)
 
             return [(f, replica) for f in functions]
+
+    def add_replica(self, replica: FunctionReplica):
+        functions = self._get_function(replica)
+        for function, actual_replica in functions:
+            self.weight_calculator.add_replica(function, actual_replica)
+
+    def remove_replica(self, replica: FunctionReplica):
+        functions = self._get_function(replica)
+        for function, actual_replica in functions:
+            self.weight_calculator.remove_replica(function, actual_replica)
+
+    def set_weights(self, weights: Dict[str, Dict[str, float]]):
+        ...
+
+    def get_running_replica_ids(self, replicas: List[FunctionReplica]):
+        replica_ids = [r.replica_id for r in replicas if r.state == FunctionReplicaState.RUNNING]
+        return replica_ids
+
+    def _sync_replica_state(self):
+        managed_functions = self.get_functions()
+        for function in managed_functions:
+            function_name = function.name
+            replicas = self.get_running_replicas(function_name)
+            if not self.weight_calculator.manages_functions(function_name):
+                replica_ids = self.get_running_replica_ids(replicas)
+                self.weight_calculator.update(function_name, replica_ids)
+            else:
+                try:
+                    current_replica_ids = self.get_running_replica_ids(replicas)
+                    weight_calculator_replica_ids = self.weight_calculator.get_replicas_ids(function_name)
+                    if not set(current_replica_ids) == set(weight_calculator_replica_ids):
+                        for replica in replicas:
+                            # A new replica as added
+                            if replica.replica_id not in weight_calculator_replica_ids:
+                                self.weight_calculator.add_replica(function_name, replica)
+                        for r_id in weight_calculator_replica_ids:
+                            # A replica was removed
+                            if r_id not in current_replica_ids:
+                                replica = self.context.replica_service.get_function_replica_by_id(r_id)
+                                self.weight_calculator.remove_replica(function_name, replica)
+                except Exception as e:
+                    logger.error(f'something went wrong syncing {e}')
+
+    def calculate_weights(self) -> Dict[str, Dict[str, float]]:
+        self._sync_replica_state()
+        return self.weight_calculator.calculate_weights()
+
+    def add_replicas(self, replicas: List[FunctionReplica]):
+        for replica in replicas:
+            self.add_replica(replica)
+
+    def remove_replicas(self, replicas: List[FunctionReplica]):
+        for replica in replicas:
+            self.remove_replica(replica)
+
+
+class GlobalWrrOptimizer(GlobalLoadBalancerOptimizer):
+
+    def __init__(self, context: PlatformContext, metrics: Metrics,
+                 weight_calculator: WeightCalculator) -> None:
+        super().__init__(context)
+        self.metrics = metrics
+        self.weight_calculator = weight_calculator
+        # context.replica_service.register(self.observer)
+
+    def update(self):
+        weights = self.calculate_weights()
+        self.metrics.log('wrr-weights', 'global', **weights)
+        self.set_weights(weights)
+
+    def _get_function(self, replica: FunctionReplica) -> List[Tuple[str, FunctionReplica]]:
+        if replica.state is not FunctionReplicaState.RUNNING:
+            return []
+        if replica.labels.get(pod_type_label) is None:
+            return []
+        if replica.labels[pod_type_label] == function_type_label:
+                return [(replica.function.name, replica)]
+
 
     def add_replica(self, replica: FunctionReplica):
         functions = self._get_function(replica)

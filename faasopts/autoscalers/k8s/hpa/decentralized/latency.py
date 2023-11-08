@@ -31,7 +31,7 @@ class HorizontalLatencyPodAutoscalerParameters:
     percentile_duration: float = 90
 
 
-class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
+class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
     """
     This Optimizer implementation is based on the official default Kubernetes HPA and uses latency to determine
     the number of replicas.
@@ -106,10 +106,11 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
         for deployment in deployment_service.get_deployments():
             logger.info(f'HLPA scaling for function {deployment.name}')
             spec = self.parameters.get(deployment.name, None)
-            logger.info(f'for deployment {deployment.name} found following spec {spec}')
             if spec is None:
                 continue
-            logger.info(f'Deployment passed if check {deployment.name}')
+            if deployment.name == 'api-gateway':
+                continue
+
             def access(r: ResponseRepresentation):
                 return r.__dict__[spec.target_time_measure]
 
@@ -118,18 +119,22 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             pending_pods = replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
                                                                                state=FunctionReplicaState.PENDING)
             conceiving_pods = replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
-                                                                               state=FunctionReplicaState.CONCEIVED)
-
+                                                                                  state=FunctionReplicaState.CONCEIVED)
 
             if self.cluster is not None:
-                running_pods = [x for x in running_pods if x.labels[zone_label] == self.cluster]
-                pending_pods = [x for x in pending_pods if x.labels[zone_label] == self.cluster]
-                conceiving_pods = [x for x in conceiving_pods if x.labels[zone_label] == self.cluster]
+                in_cluster_running_pods = [x for x in running_pods if x.labels[zone_label] == self.cluster]
+                no_in_cluster_running_pods = len(in_cluster_running_pods)
+                in_cluster_pending_pods = [x for x in pending_pods if x.labels[zone_label] == self.cluster]
+                no_in_cluster_pending_pods = len(in_cluster_pending_pods)
+                in_cluster_conceiving_pods = [x for x in conceiving_pods if x.labels[zone_label] == self.cluster]
+                no_in_cluster_conceiving_pods = len(in_cluster_conceiving_pods)
+                no_in_cluster_pods = no_in_cluster_running_pods + no_in_cluster_pending_pods + no_in_cluster_conceiving_pods
 
             no_of_running_pods = len(running_pods) if running_pods is not None else 0
             no_of_pending_pods = len(pending_pods) if pending_pods is not None else 0
             no_of_conceiving_pods = len(conceiving_pods) if conceiving_pods is not None else 0
-            logger.info(f'no of running pods: {no_of_running_pods}, no of pending pods: {no_of_pending_pods}, no of conceiving pods: {no_of_conceiving_pods}')
+            logger.info(
+                f'no of running pods: {no_of_running_pods}, no of pending pods: {no_of_pending_pods}, no of conceiving pods: {no_of_conceiving_pods}')
             no_of_pods = no_of_running_pods + no_of_pending_pods + no_of_conceiving_pods
             now = self.now()
             lookback_seconds_ago = now - spec.lookback
@@ -138,10 +143,12 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             logger.info(f"Fetch traces {spec.lookback} seconds ago")
 
             if self.cluster is not None:
-                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now, access,
-                                                               zone=self.cluster)
+                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now,
+                                                                       access,
+                                                                       zone=self.cluster)
             else:
-                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now, access)
+                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now,
+                                                                       access)
             if traces is None or len(traces) == 0:
                 logger.info(f'No trace data for function: {deployment.name}, skip iteration')
                 record = {
@@ -150,21 +157,24 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     'target_duration': spec.target_duration,
                     'percentile': spec.percentile_duration,
                     'base_scale_ratio': -1,
-                    'running_pods': no_of_running_pods,
-                    'pending_pods': no_of_pending_pods,
+                    'running_pods': no_in_cluster_running_pods,
+                    'pending_pods': no_in_cluster_pending_pods,
                     'threshold_tolerance': spec.threshold_tolerance,
                 }
                 logger.info("Scale down because no traces were found")
-                scale_down_containers = int(no_of_running_pods * 0.3)
-                desired_replicas = no_of_pods - scale_down_containers
+                scale_down_containers = int(no_in_cluster_running_pods * 0.3)
+                desired_replicas = no_in_cluster_running_pods - scale_down_containers
+                if desired_replicas <= 0:
+                    logger.info('Skip scale down, minimum number of pods running.')
+                    continue
                 logger.info(f'Number of desired  {desired_replicas}')
-                logger.info(f'Number of all pods {no_of_pods}')
+                logger.info(f'Number of all pods {no_in_cluster_running_pods}')
                 logger.info(f'Number of replicas to be scaled downed {scale_down_containers}')
                 # choose the last added containers
                 # TODO: include pending pods, can lead to issues if too many pods
                 #  are pending and not enoguh pods are running to remove
-                all_pods = running_pods
-                to_remove = all_pods[no_of_running_pods - scale_down_containers:]
+                all_pods = no_in_cluster_running_pods
+                to_remove = in_cluster_running_pods[no_in_cluster_running_pods - scale_down_containers:]
                 if len(to_remove) > 0:
                     if len(to_remove) > 20:
                         delete_length = len(to_remove) - 20
@@ -233,7 +243,8 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 # check if new number of pods is over the maximum. if yes => set to minimum
                 scale_max = deployment.scaling_configuration.scale_max
                 if scale_max is not None and desired_replicas > scale_max:
-                    logger.info(f'Number of desired replicas is bigger than scale max ({desired_replicas} > {scale_max}) -> scale to max replicas if possible.')
+                    logger.info(
+                        f'Number of desired replicas is bigger than scale max ({desired_replicas} > {scale_max}) -> scale to max replicas if possible.')
                     desired_replicas = scale_max
 
                 scale_up_replicas_no = desired_replicas - no_of_pods
@@ -245,7 +256,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     scale_up_replicas = []
                     for i in range(scale_up_replicas_no):
                         replica = self.replica_factory.create_replica(
-                            {worker_role_label: 'true', zone_label: self.cluster},
+                            {worker_role_label: 'true', 'origin_zone': self.cluster, zone_label: 'None'},
                             deployment.deployment_ranking.get_first(), deployment)
                         scale_up_replicas.append(replica)
                 self.scale_up(deployment.name, scale_up_replicas)
@@ -253,18 +264,34 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
 
             else:
                 logger.info("Scale down")
-                scale_down_containers = no_of_pods - desired_replicas
+                if desired_replicas == 0 and no_of_pods  == 1 and no_in_cluster_pods == 1:
+                    desired_replicas = 1
+                scale_down_containers = no_in_cluster_pods - desired_replicas
+                if scale_down_containers < 0:
+                    scale_down_containers = no_in_cluster_pods - 1
                 logger.info(f'Number of desired  {desired_replicas}')
-                logger.info(f'Number of all pods {no_of_pods}')
+                logger.info(f'Number of all pods in cluster {no_in_cluster_pods}')
                 logger.info(f'Number of replicas to be scaled downed {scale_down_containers}')
                 # choose the last added containers
                 # TODO: include pending pods, can lead to issues if too many pods
                 #  are pending and not enoguh pods are running to remove
-                all_pods = conceiving_pods + pending_pods + running_pods
-                to_remove = all_pods[no_of_pods - scale_down_containers:]
+                all_pods = in_cluster_running_pods + in_cluster_pending_pods + in_cluster_conceiving_pods
+                to_remove = []
+                not_in_cluster = []
+                for pod in all_pods:
+                    if pod.labels[zone_label] == self.cluster:
+                        if len(to_remove) == scale_down_containers:
+                            break
+                        to_remove.append(pod)
+                    else:
+                        not_in_cluster.append(pod)
+
+                # if len(to_remove) < scale_down_containers:
+                #     missing = scale_down_containers - len(to_remove)
+                #     to_remove.extend(not_in_cluster[:missing])
                 if len(to_remove) > 0:
-                    if len(to_remove) > int(no_of_running_pods * 0.2):
-                        delete_length = len(to_remove) - int(no_of_running_pods * 0.2)
+                    if len(to_remove) > 20:
+                        delete_length = len(to_remove) - 20
                         to_remove = to_remove[delete_length:]
                     self.scale_down(deployment.name, to_remove)
 
