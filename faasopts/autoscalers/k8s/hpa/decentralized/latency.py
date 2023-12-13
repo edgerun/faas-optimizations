@@ -42,7 +42,7 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
     def __init__(self, parameters: Dict[str, HorizontalLatencyPodAutoscalerParameters], ctx: PlatformContext,
                  faas: FaasSystem,
                  metrics: Metrics, now: Callable[[], float], cluster: str = None,
-                 replica_factory: FunctionReplicaFactory = None):
+                 replica_factory: FunctionReplicaFactory = None, use_yield: bool = False):
         """
         Initializes the HPA latency-based implementation
         :param parameters: HPA parameters per deployment that dictate various configuration values
@@ -59,6 +59,7 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
         self.now = now
         self.cluster = cluster
         self.replica_factory = replica_factory
+        self.use_yield = use_yield
         if cluster and not replica_factory:
             raise AttributeError('Replica Factory must be set when given cluster.')
 
@@ -256,15 +257,20 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     scale_up_replicas = []
                     for i in range(scale_up_replicas_no):
                         replica = self.replica_factory.create_replica(
-                            {worker_role_label: 'true', 'origin_zone': self.cluster, zone_label: 'None'},
+                            {worker_role_label: 'true', 'origin_zone': self.cluster, zone_label: 'None',
+                             'schedulerName': 'global-scheduler'},
                             deployment.deployment_ranking.get_first(), deployment)
                         scale_up_replicas.append(replica)
-                self.scale_up(deployment.name, scale_up_replicas)
+
+                if self.use_yield:
+                    yield from self.faas.scale_up(deployment.name, scale_up_replicas)
+                else:
+                    self.faas.scale_up(deployment.name, scale_up_replicas)
 
 
             else:
                 logger.info("Scale down")
-                if desired_replicas == 0 and no_of_pods  == 1 and no_in_cluster_pods == 1:
+                if desired_replicas == 0 and no_of_pods == 1 and no_in_cluster_pods == 1:
                     desired_replicas = 1
                 scale_down_containers = no_in_cluster_pods - desired_replicas
                 if scale_down_containers < 0:
@@ -293,7 +299,10 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     if len(to_remove) > 20:
                         delete_length = len(to_remove) - 20
                         to_remove = to_remove[delete_length:]
-                    self.scale_down(deployment.name, to_remove)
+                    if self.use_yield:
+                        yield from self.scale_down(deployment.name, to_remove)
+                    else:
+                        self.scale_down(deployment.name, to_remove)
 
             record = {
                 's': self.now(),
