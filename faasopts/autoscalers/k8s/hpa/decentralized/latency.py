@@ -1,13 +1,14 @@
-import datetime
+import logging
 import logging
 import math
 from dataclasses import dataclass
 from typing import Dict, Callable, Union, List
 
 import numpy as np
+from dataclasses_json import dataclass_json
 from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService, \
     ResponseRepresentation, FunctionReplicaFactory
-from faas.system import FaasSystem, Metrics, FunctionReplicaState, Clock, FunctionReplica
+from faas.system import FaasSystem, Metrics, FunctionReplicaState, FunctionReplica
 from faas.util.constant import zone_label, worker_role_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
@@ -15,6 +16,7 @@ from faasopts.autoscalers.api import BaseAutoscaler
 logger = logging.getLogger(__name__)
 
 
+@dataclass_json
 @dataclass
 class HorizontalLatencyPodAutoscalerParameters:
     # the past (in seconds) that should be considered when looking at monitoring data
