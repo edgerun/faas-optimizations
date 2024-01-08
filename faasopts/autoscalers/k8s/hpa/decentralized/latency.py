@@ -337,7 +337,13 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
             self.lock.release()
 
     def scale_down(self, function: str, remove: Union[int, List[FunctionReplica]]):
-        self.faas.scale_down(function, remove)
+        if self.use_yield:
+            yield from self.faas.scale_down(function, remove)
+        else:
+            self.faas.scale_down(function, remove)
 
     def scale_up(self, function: str, add: Union[int, List[FunctionReplica]]):
-        self.faas.scale_up(function, add)
+        if self.use_yield:
+            yield from self.faas.scale_up(function, add)
+        else:
+            self.faas.scale_up(function, add)
