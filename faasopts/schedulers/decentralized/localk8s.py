@@ -6,8 +6,9 @@ import time
 from typing import Optional
 
 from faas.context import PlatformContext
-from faas.system import Metrics
+from faas.system import Metrics, FunctionReplicaState, FunctionReplica
 from faas.system.scheduling.decentralized import LocalScheduler
+from faas.util.constant import function_label
 from kubernetes import client, watch
 from kubernetes.client import V1Pod
 
@@ -80,7 +81,7 @@ class K8sLocalScheduler:
         running = True
         while running:
             w = watch.Watch()
-            stream = w.stream(self.v1.list_namespaced_pod, namespace="default")
+            stream = w.stream(self.v1.list_namespaced_pod, namespace="default",timeout_seconds=0)
             for event in stream:
                 pod = event['object']
                 if pod.status.phase == "Pending" and pod.spec.scheduler_name == self.scheduler_name and \
@@ -98,11 +99,17 @@ class K8sLocalScheduler:
                     start_ts = time.time()
                     try:
                         pod: V1Pod = event['object']
-                        replica = self.ctx.replica_service.get_function_replica_by_id(pod.metadata.name)
-                        if replica is None:
-                            print("Could not schedule pod: %s" % pod.metadata.name)
-                            self.v1.delete_namespaced_pod(name=pod.metadata.name, namespace='default')
 
+                        deployment = self.ctx.deployment_service.get_by_name(pod.metadata.labels[function_label])
+                        container = deployment.get_containers()[0]
+                        replica = FunctionReplica(
+                            pod.metadata.name,
+                            pod.metadata.labels,
+                            deployment,
+                            container,
+                            None,
+                            FunctionReplicaState.PENDING
+                        )
                         node: Optional[str] = self.local_scheduler.schedule(replica)
                         if node:
                             logger.info(f'Chose {node}')

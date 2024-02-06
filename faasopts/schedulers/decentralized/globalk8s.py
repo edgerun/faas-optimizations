@@ -113,69 +113,6 @@ class K8sGlobalScheduler:
         self.metrics.log('nodes-available', end_ts - start_ts)
         return ready_nodes, pod_per_node
 
-    def nodes_available_in_cluster(self, min_cores_required: int, min_memory_required: int, cluster: str) -> List[str]:
-        ready_nodes = []
-        start_ts = time.time()
-        for n in self.v1.list_node(label_selector='node-role.kubernetes.io/worker=true').items:
-            for status in n.status.conditions:
-                if status.status == "True" and status.type == "Ready":
-                    node_cluster_label = n.metadata.labels.get(zone_label)
-                    if node_cluster_label != cluster:
-                        continue
-                    node_name = n.metadata.name
-                    cpu_reserved = 0
-                    memory_reserved = 0
-                    for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name):
-                        if replica.state != FunctionReplicaState.RUNNING:
-                            continue
-                        cpu = parse_quantity(replica.container.get_resource_requirements()['cpu'])
-                        cpu_reserved += cpu
-                        memory = parse_size_string(replica.container.get_resource_requirements()['memory'])
-                        memory_reserved += memory
-
-                    node = self.ctx.node_service.find(node_name)
-                    node_cores = node.cpus
-                    node_memory = parse_size_string(node.allocatable['memory'])
-                    enough_memory = (memory_reserved + min_memory_required) < node_memory
-                    enough_cores = cpu_reserved + min_cores_required < node_cores
-                    has_enough_resources = enough_cores and enough_memory
-                    if has_enough_resources:
-                        ready_nodes.append(node_name)
-        logger.info(ready_nodes)
-        end_ts = time.time()
-        self.metrics.log('nodes-available', end_ts - start_ts)
-        return ready_nodes
-
-    def get_filtered_nodes(self, pod):
-        resources_requests = pod.spec.containers[0].resources.requests
-        cpu_request = resources_requests.get('cpu')
-        if cpu_request:
-            required_cores = parse_quantity(cpu_request)
-        else:
-            required_cores = 0
-        memory_request = resources_requests.get('memory')
-        if memory_request:
-            required_memory = parse_size_string(memory_request)
-        else:
-            required_memory = 0
-        nodes_available = self.nodes_available(required_cores, required_memory)
-        return nodes_available
-
-    def get_filtered_nodes_in_cluster(self, pod, cluster: str):
-        resources_requests = pod.spec.containers[0].resources.requests
-        cpu_request = resources_requests.get('cpu')
-        if cpu_request:
-            required_cores = parse_quantity(cpu_request)
-        else:
-            required_cores = 0
-        memory_request = resources_requests.get('memory')
-        if memory_request:
-            required_memory = parse_size_string(memory_request)
-        else:
-            required_memory = 0
-        nodes_available = self.nodes_available_in_cluster(required_cores, required_memory, cluster)
-        return nodes_available
-
     def reschedule_pod(self, pod_name: str, scheduler_name: str, zone: str) -> V1Pod:
         # because schedulerName from pods cannot be changed, so we delete the pod to reschedule
         pod = self.v1.delete_namespaced_pod(name=pod_name, namespace='default')
@@ -196,7 +133,7 @@ class K8sGlobalScheduler:
         running = True
         while running:
             w = watch.Watch()
-            stream = w.stream(self.v1.list_namespaced_pod, namespace="default")
+            stream = w.stream(self.v1.list_namespaced_pod, namespace="default", timeout_seconds=0)
             for event in stream:
                 pod: V1Pod = event['object']
                 if pod.status.phase == "Pending" and pod.spec.scheduler_name == self.scheduler_name and \
@@ -207,16 +144,24 @@ class K8sGlobalScheduler:
                         running = False
                         self.v1.delete_namespaced_pod(name=f'poison-pod-{self.scheduler_name}', namespace='default')
                         break
-                    replica = self.ctx.replica_service.get_function_replica_by_id(pod.metadata.name)
-                    if len(replica) == 0:
-                        logger.warning(f'No replica found for pod {pod.metadata.name}')
-                        continue
+
                     if self.delay > 0:
                         busy(self.delay)
 
                     start_ts = time.time()
                     logger.info("finding best local scheduler for pod: %s" % pod.metadata.name)
                     try:
+                        deployment = self.ctx.deployment_service.get_by_name(pod.metadata.labels[function_label])
+                        containers = pod.spec.containers
+                        container = deployment.get_containers()[0]
+                        replica = FunctionReplica(
+                            pod.metadata.name,
+                            pod.metadata.labels,
+                            deployment,
+                            container,
+                            None,
+                            FunctionReplicaState.PENDING
+                        )
                         scheduler_for_pod, zone = self.global_scheduler.find_cluster(replica)
                         if scheduler_for_pod and scheduler_for_pod != '':
                             new_pod = self.reschedule_pod(pod.metadata.name, scheduler_for_pod, zone)
