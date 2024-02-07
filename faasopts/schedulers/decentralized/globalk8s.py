@@ -7,9 +7,9 @@ import time
 from typing import Dict, List, Any, Union
 
 from faas.context import PlatformContext
-from faas.system import Metrics, FunctionReplicaState, FaasSystem
+from faas.system import Metrics, FunctionReplicaState, FaasSystem, FunctionReplica
 from faas.system.scheduling.decentralized import GlobalScheduler
-from faas.util.constant import zone_label
+from faas.util.constant import zone_label, function_label
 from kubernetes import client, watch
 from kubernetes.client import V1Pod
 from kubernetes.utils import parse_quantity
@@ -152,7 +152,6 @@ class K8sGlobalScheduler:
                     logger.info("finding best local scheduler for pod: %s" % pod.metadata.name)
                     try:
                         deployment = self.ctx.deployment_service.get_by_name(pod.metadata.labels[function_label])
-                        containers = pod.spec.containers
                         container = deployment.get_containers()[0]
                         replica = FunctionReplica(
                             pod.metadata.name,
