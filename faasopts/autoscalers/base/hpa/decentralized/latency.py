@@ -322,11 +322,11 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
         finally:
             self.lock.release()
 
-    def update(self, params: HorizontalLatencyPodAutoscalerParameters):
+    def update(self, fn: str, params: HorizontalLatencyPodAutoscalerParameters):
         try:
             self.lock.acquire(blocking=True)
             logger.info(f'updating parameters. old: {self.parameters}, new: {params}')
-            self.parameters = params
+            self.parameters[fn] = params
         finally:
             self.lock.release()
 
