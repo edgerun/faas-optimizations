@@ -100,11 +100,19 @@ class LocalBalancedScheduler(LocalScheduler):
                 if replica.state != FunctionReplicaState.RUNNING:
                     continue
 
-                cpu = parse_quantity(replica.container.get_resource_requirements()['cpu'])
+                cpu = replica.container.get_resource_requirements()['cpu']
+                if type(cpu) is str:
+                    cpu = parse_quantity(cpu)
+                else:
+                    cpu /= 1000
                 cpu_reserved += cpu
-                memory = parse_size_string(replica.container.get_resource_requirements()['memory'])
+
+                memory = replica.container.get_resource_requirements()['memory']
+                if type(memory) is str:
+                    memory = parse_size_string(memory)
                 memory_reserved += memory
                 count_replicas = count_replicas + 1
+
             pod_per_node[node_name] = count_replicas
             node = self.ctx.node_service.find(node_name)
             node_cores = node.cpus
