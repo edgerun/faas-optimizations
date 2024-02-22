@@ -241,10 +241,10 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     continue
                 # logger.info(f"Scale to {desired_replicas} from {no_of_running_pods} without "
                 #             f"factoring in not-yet-ready pods")
-                logger.info(f"Scale to {desired_replicas} from {no_of_pods} with "
+                logger.info(f"Scale to {desired_replicas} from {no_in_cluster_pods} with "
                             f"factoring in not-yet-ready pods")
 
-                if desired_replicas > no_of_pods:
+                if desired_replicas > no_in_cluster_pods:
                     logger.info("Scale up")
                     # check if new number of pods is over the maximum. if yes => set to minimum
                     scale_max = deployment.scaling_configuration.scale_max
@@ -253,9 +253,9 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                             f'Number of desired replicas is bigger than scale max ({desired_replicas} > {scale_max}) -> scale to max replicas if possible.')
                         desired_replicas = scale_max
 
-                    scale_up_replicas_no = desired_replicas - no_of_pods
+                    scale_up_replicas_no = desired_replicas - no_in_cluster_pods
                     logger.info(f'Number of desired  {desired_replicas}')
-                    logger.info(f'Number of all pods {no_of_pods}')
+                    logger.info(f'Number of all pods {no_in_cluster_pods}')
                     logger.info(f'Number of replicas to be scaled up {scale_up_replicas_no}')
                     scale_up_replicas = scale_up_replicas_no
                     if self.cluster:
