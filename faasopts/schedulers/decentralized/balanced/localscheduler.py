@@ -120,6 +120,7 @@ class LocalBalancedScheduler(LocalScheduler):
             if type(node_memory) is str:
                 node_memory = parse_size_string(node_memory)
             enough_memory = (memory_reserved + min_memory_required) < node_memory
+            logger.info(f'Node: {node_name}, CPU reserved: {cpu_reserved}, min_cores_required: {min_cores_required}, node_cores: {node_cores}')
             enough_cores = cpu_reserved + min_cores_required < node_cores
 
             has_enough_resources = enough_cores and enough_memory

@@ -113,7 +113,8 @@ class K8sLocalScheduler:
                         node: Optional[str] = self.local_scheduler.schedule(replica)
                         if node:
                             logger.info(f'Chose {node}')
-
+                            replica.node = self.ctx.node_service.find(node)
+                            self.add_replica(replica)
                             # self.recreate_pod_as_replica(pod_name=pod.metadata.name, node_name=node)
                             self.scheduler_pod(pod.metadata.name, node, "default")
 
@@ -128,3 +129,6 @@ class K8sLocalScheduler:
                         print(json.loads(e.body)['message'])
 
         print("End scheduling %s" % self.scheduler_name)
+
+    def add_replica(self, replica: FunctionReplica):
+        self.ctx.replica_service.add_function_replica(replica)
