@@ -218,10 +218,10 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     self.metrics.log('hlpa-decision', no_of_pods, **record)
                     continue
 
-                desired_replicas = math.ceil(no_of_running_pods * (base_scale_ratio))
+                desired_replicas = math.ceil(no_in_cluster_running_pods * (base_scale_ratio))
                 logger.info(f"Desired {desired_replicas}")
-                logger.info(f"Current Running {no_of_running_pods}")
-                logger.info(f"Current Running + pending/conceived {no_of_pending_pods + no_of_conceiving_pods}")
+                logger.info(f"Current Running {no_in_cluster_running_pods}")
+                logger.info(f"Current Running + pending/conceived {no_in_cluster_pending_pods + no_in_cluster_conceiving_pods}")
                 if desired_replicas == no_of_pods:
                     logger.info(f"No scaling actions necessary for {deployment.name}")
                     record = {
@@ -229,8 +229,8 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                         'duration_agg': duration_agg,
                         'target_duration': spec.target_duration,
                         'base_scale_ratio': base_scale_ratio,
-                        'running_pods': no_of_running_pods,
-                        'pending_pods': no_of_pending_pods,
+                        'running_pods': no_in_cluster_running_pods,
+                        'pending_pods': no_in_cluster_pending_pods,
                         'percentile': spec.percentile_duration,
                         'threshold_tolerance': spec.threshold_tolerance,
                     }
