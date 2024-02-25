@@ -9,6 +9,7 @@ from faas.context import PlatformContext
 from faas.system import Metrics, FunctionReplicaState, FunctionReplica
 from faas.system.scheduling.decentralized import LocalScheduler
 from faas.util.constant import function_label
+from galileofaas.system.core import KubernetesFunctionReplica
 from kubernetes import client, watch
 from kubernetes.client import V1Pod
 
@@ -131,4 +132,16 @@ class K8sLocalScheduler:
         print("End scheduling %s" % self.scheduler_name)
 
     def add_replica(self, replica: FunctionReplica):
-        self.ctx.replica_service.add_function_replica(replica)
+        k8s_replica = KubernetesFunctionReplica(
+            replica,
+            ip=None,
+            port=8080,
+            url=None,
+            namespace='default',
+            host_ip=None,
+            qos_class=None,
+            start_time=None,
+            pod_name=replica.replica_id,
+            container_id=None
+        )
+        self.ctx.replica_service.add_function_replica(k8s_replica)
