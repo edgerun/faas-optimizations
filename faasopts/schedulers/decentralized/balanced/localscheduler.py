@@ -4,7 +4,7 @@ import time
 from typing import List
 
 from faas.context import PlatformContext
-from faas.system import Metrics, FunctionReplicaState, FunctionReplica, FunctionNode
+from faas.system import Metrics, FunctionReplica, FunctionNode
 from faas.system.scheduling.decentralized import LocalScheduler
 from faas.util.constant import client_role_label, worker_role_label, controller_role_label
 from kubernetes.utils import parse_quantity
@@ -97,9 +97,9 @@ class LocalBalancedScheduler(LocalScheduler):
             cpu_reserved = 0
             memory_reserved = 0
             count_replicas = 0
-            for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name):
-                if replica.state != FunctionReplicaState.RUNNING:
-                    continue
+            for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name, None):
+                # if replica.state != FunctionReplicaState.RUNNING:
+                #     continue
 
                 cpu = replica.container.get_resource_requirements()['cpu']
                 if type(cpu) is str:
@@ -145,9 +145,9 @@ class LocalBalancedScheduler(LocalScheduler):
             node_name = n.name
             cpu_reserved = 0
             memory_reserved = 0
-            for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name):
-                if replica.state != FunctionReplicaState.RUNNING:
-                    continue
+            for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name, None):
+                # if replica.state != FunctionReplicaState.RUNNING:
+                #     continue
                 cpu = replica.container.get_resource_requirements()['cpu']
                 if type(cpu) is str:
                     cpu = parse_quantity(cpu)

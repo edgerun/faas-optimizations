@@ -84,7 +84,7 @@ class LocalityGlobalScheduler(GlobalScheduler):
             cpu_reserved = 0
             memory_reserved = 0
             count_replicas = 0
-            for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name):
+            for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name, None):
                 if replica.state != FunctionReplicaState.RUNNING:
                     continue
                 cpu = replica.container.get_resource_requirements()['cpu']
@@ -129,7 +129,7 @@ class LocalityGlobalScheduler(GlobalScheduler):
             node_name = n.name
             cpu_reserved = 0
             memory_reserved = 0
-            for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name):
+            for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name, None):
                 if replica.state != FunctionReplicaState.RUNNING:
                     continue
                 cpu = replica.container.get_resource_requirements()['cpu']
