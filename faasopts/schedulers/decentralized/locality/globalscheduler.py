@@ -1,14 +1,13 @@
 import logging
 import re
-import sys
 import time
 from collections import defaultdict
-from statistics import mean
 from typing import Dict, List, Tuple
 
 from faas.context import PlatformContext
 from faas.system import Metrics, FunctionReplicaState, FunctionReplica, FunctionNode
 from faas.system.scheduling.decentralized import GlobalScheduler
+from faas.util.constant import worker_role_label
 from kubernetes.utils import parse_quantity
 from skippy.core.utils import parse_size_string
 
@@ -79,6 +78,8 @@ class LocalityGlobalScheduler(GlobalScheduler):
         pod_per_node = {}
         nodes: List[FunctionNode] = self.ctx.node_service.get_nodes()
         for n in nodes:
+            if n.labels.get(worker_role_label) is None:
+                continue
             node_name = n.name
             cpu_reserved = 0
             memory_reserved = 0
@@ -117,7 +118,7 @@ class LocalityGlobalScheduler(GlobalScheduler):
         nodes: List[FunctionNode] = self.ctx.node_service.get_nodes()
         for n in nodes:
             node_cluster_label = n.cluster
-            if node_cluster_label != cluster:
+            if node_cluster_label != cluster or n.labels.get(worker_role_label) is None:
                 continue
             node_name = n.name
             cpu_reserved = 0

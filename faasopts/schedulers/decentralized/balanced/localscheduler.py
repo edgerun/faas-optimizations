@@ -1,7 +1,6 @@
 import logging
 import math
 import time
-from collections import defaultdict
 from typing import List
 
 from faas.context import PlatformContext
@@ -92,6 +91,8 @@ class LocalBalancedScheduler(LocalScheduler):
         pod_per_node = {}
         nodes: List[FunctionNode] = self.ctx.node_service.find_nodes_in_zone(self.cluster)
         for n in nodes:
+            if n.labels.get(worker_role_label) is None:
+                continue
             node_name = n.name
             cpu_reserved = 0
             memory_reserved = 0
@@ -139,7 +140,7 @@ class LocalBalancedScheduler(LocalScheduler):
         nodes: List[FunctionNode] = self.ctx.node_service.get_nodes()
         for n in nodes:
             node_cluster_label = n.cluster
-            if node_cluster_label != cluster:
+            if node_cluster_label != cluster or n.labels.get(worker_role_label) is None:
                 continue
             node_name = n.name
             cpu_reserved = 0
