@@ -132,6 +132,7 @@ class K8sLocalScheduler:
         print("End scheduling %s" % self.scheduler_name)
 
     def add_replica(self, replica: FunctionReplica):
+        replica.state = FunctionReplicaState.RUNNING
         k8s_replica = KubernetesFunctionReplica(
             replica,
             ip=None,
