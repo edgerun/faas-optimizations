@@ -205,6 +205,6 @@ class LocalityGlobalScheduler(GlobalScheduler):
         for zone in self.zones:
             nodes = self.ctx.node_service.find_nodes_in_zone(zone)
             node = nodes[0]
-            latency = self.ctx.network_service.get_latency(node, origin_node)
+            latency = self.ctx.network_service.get_latency(node.name, origin_node.name)
             distances.append((zone, latency))
         return distances
