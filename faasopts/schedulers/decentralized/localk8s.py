@@ -132,6 +132,8 @@ class K8sLocalScheduler:
         print("End scheduling %s" % self.scheduler_name)
 
     def add_replica(self, replica: FunctionReplica):
+        logger.info(
+            f'Scheduled replica: name={replica.replica_id} to node={replica.node.name}, adding to context for next round')
         replica.state = FunctionReplicaState.RUNNING
         k8s_replica = KubernetesFunctionReplica(
             replica,
@@ -145,4 +147,6 @@ class K8sLocalScheduler:
             pod_name=replica.replica_id,
             container_id=None
         )
-        self.ctx.replica_service.add_function_replica(k8s_replica)
+        self.ctx.replica_service.replica_service.add_function_replica(k8s_replica)
+        logger.info(
+            f'Added replica: name={replica.replica_id} to node={replica.node.name}, adding to context for next round')
