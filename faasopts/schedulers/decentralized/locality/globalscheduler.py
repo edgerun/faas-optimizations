@@ -85,7 +85,7 @@ class LocalityGlobalScheduler(GlobalScheduler):
             memory_reserved = 0
             count_replicas = 0
             for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name, None):
-                if replica.state != FunctionReplicaState.RUNNING:
+                if replica.state == FunctionReplicaState.DELETE or replica.state == FunctionReplicaState.SHUTDOWN:
                     continue
                 cpu = replica.container.get_resource_requirements()['cpu']
                 if type(cpu) is str:
@@ -130,7 +130,7 @@ class LocalityGlobalScheduler(GlobalScheduler):
             cpu_reserved = 0
             memory_reserved = 0
             for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name, None):
-                if replica.state != FunctionReplicaState.RUNNING:
+                if replica.state == FunctionReplicaState.DELETE or replica.state == FunctionReplicaState.SHUTDOWN:
                     continue
                 cpu = replica.container.get_resource_requirements()['cpu']
                 if type(cpu) is str:
@@ -138,7 +138,6 @@ class LocalityGlobalScheduler(GlobalScheduler):
                 else:
                     cpu /= 1000
                 cpu_reserved += cpu
-
                 memory = replica.container.get_resource_requirements()['memory']
                 if type(memory) is str:
                     memory = parse_size_string(memory)
@@ -149,6 +148,7 @@ class LocalityGlobalScheduler(GlobalScheduler):
             node_memory = node.allocatable['memory']
             if type(node_memory) is str:
                 node_memory = parse_size_string(node_memory)
+
             enough_memory = (memory_reserved + min_memory_required) < node_memory
             enough_cores = cpu_reserved + min_cores_required < node_cores
             has_enough_resources = enough_cores and enough_memory

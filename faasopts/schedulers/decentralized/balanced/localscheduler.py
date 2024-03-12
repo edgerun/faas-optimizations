@@ -4,7 +4,7 @@ import time
 from typing import List
 
 from faas.context import PlatformContext
-from faas.system import Metrics, FunctionReplica, FunctionNode
+from faas.system import Metrics, FunctionReplica, FunctionNode, FunctionReplicaState
 from faas.system.scheduling.decentralized import LocalScheduler
 from faas.util.constant import client_role_label, worker_role_label, controller_role_label
 from kubernetes.utils import parse_quantity
@@ -98,8 +98,8 @@ class LocalBalancedScheduler(LocalScheduler):
             memory_reserved = 0
             count_replicas = 0
             for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name, None):
-                # if replica.state != FunctionReplicaState.RUNNING:
-                #     continue
+                if replica.state == FunctionReplicaState.DELETE or replica.state == FunctionReplicaState.SHUTDOWN:
+                    continue
 
                 cpu = replica.container.get_resource_requirements()['cpu']
                 if type(cpu) is str:
@@ -146,8 +146,8 @@ class LocalBalancedScheduler(LocalScheduler):
             cpu_reserved = 0
             memory_reserved = 0
             for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name, None):
-                # if replica.state != FunctionReplicaState.RUNNING:
-                #     continue
+                if replica.state == FunctionReplicaState.DELETE or replica.state == FunctionReplicaState.SHUTDOWN:
+                    continue
                 cpu = replica.container.get_resource_requirements()['cpu']
                 if type(cpu) is str:
                     cpu = parse_quantity(cpu)
@@ -178,8 +178,19 @@ class LocalBalancedScheduler(LocalScheduler):
     def get_filtered_nodes_in_cluster(self, replica: FunctionReplica, cluster: str):
         resources_requests = replica.container.get_resource_requirements()
         cpu_request = resources_requests.get('cpu')
-        cpu_request /= 1000
+        if cpu_request and type(cpu_request) is cpu_request:
+            required_cores = parse_quantity(cpu_request)
+        elif not cpu_request:
+            required_cores = 0
+        else:
+            required_cores = cpu_request
+        required_cores /= 1000
         memory_request = resources_requests.get('memory')
-
-        nodes_available = self.nodes_available_in_cluster(cpu_request, memory_request, cluster)
+        if memory_request and type(memory_request) is str:
+            required_memory = parse_size_string(memory_request)
+        elif not memory_request:
+            required_memory = 0
+        else:
+            required_memory = memory_request
+        nodes_available = self.nodes_available_in_cluster(required_cores, required_memory, cluster)
         return nodes_available
