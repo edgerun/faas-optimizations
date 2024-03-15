@@ -3,13 +3,13 @@ import logging
 import math
 import threading
 from dataclasses import dataclass
-from typing import Dict, Callable, Union, List
+from typing import Dict, Callable
 
 import numpy as np
 from dataclasses_json import dataclass_json
 from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService, \
     ResponseRepresentation, FunctionReplicaFactory
-from faas.system import FaasSystem, Metrics, FunctionReplicaState, FunctionReplica
+from faas.system import FaasSystem, Metrics, FunctionReplicaState
 from faas.util.constant import zone_label, worker_role_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
@@ -110,7 +110,7 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
             trace_service: TraceService = self.ctx.trace_service
             actions = []
             for deployment in deployment_service.get_deployments():
-                logger.info(f'HLPA scaling for function {deployment.name}')
+                logger.info(f'HLPA scaling for function {deployment.name} in cluster {self.cluster}')
                 spec = self.parameters.get(deployment.name, None)
                 if spec is None:
                     continue
@@ -130,9 +130,9 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 if self.cluster is not None:
                     in_cluster_running_pods = [x for x in running_pods if x.labels[zone_label] == self.cluster]
                     no_in_cluster_running_pods = len(in_cluster_running_pods)
-                    in_cluster_pending_pods = [x for x in pending_pods if x.labels[zone_label] == self.cluster]
+                    in_cluster_pending_pods = [x for x in pending_pods if x.labels['origin_zone'] == self.cluster]
                     no_in_cluster_pending_pods = len(in_cluster_pending_pods)
-                    in_cluster_conceiving_pods = [x for x in conceiving_pods if x.labels[zone_label] == self.cluster]
+                    in_cluster_conceiving_pods = [x for x in conceiving_pods if x.labels['origin_zone'] == self.cluster]
                     no_in_cluster_conceiving_pods = len(in_cluster_conceiving_pods)
                     no_in_cluster_pods = no_in_cluster_running_pods + no_in_cluster_pending_pods + no_in_cluster_conceiving_pods
 
@@ -245,7 +245,6 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                             f"factoring in not-yet-ready pods")
 
                 if desired_replicas > no_in_cluster_pods:
-                    logger.info("Scale up")
                     # check if new number of pods is over the maximum. if yes => set to minimum
                     scale_max = deployment.scaling_configuration.scale_max
                     if scale_max is not None and desired_replicas > scale_max:
@@ -253,7 +252,13 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                             f'Number of desired replicas is bigger than scale max ({desired_replicas} > {scale_max}) -> scale to max replicas if possible.')
                         desired_replicas = scale_max
 
-                    scale_up_replicas_no = desired_replicas - no_in_cluster_pods
+                    scale_up_replicas_no = desired_replicas - (
+                                no_in_cluster_pods + no_in_cluster_conceiving_pods + no_in_cluster_pending_pods)
+                    if scale_up_replicas_no < 0:
+                        logger.info('No scaling necessary')
+                        continue
+                    logger.info(f"Scale up by {scale_up_replicas_no}")
+
                     logger.info(f'Number of desired  {desired_replicas}')
                     logger.info(f'Number of all pods {no_in_cluster_pods}')
                     logger.info(f'Number of replicas to be scaled up {scale_up_replicas_no}')

@@ -62,9 +62,10 @@ class LocalityGlobalScheduler(GlobalScheduler):
                         logger.info(f'Found scheduler: {zone} - {distance}')
                         found_scheduler = self.storage_local_schedulers[zone]
                         return found_scheduler, zone
-                else:
-                    return '', ''
+                return '', ''
+
             else:
+                logger.error(f'No node found for replica {replica}')
                 return '', ''
         else:
             found_scheduler = self.storage_local_schedulers[origin_cluster]
