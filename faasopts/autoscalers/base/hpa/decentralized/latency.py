@@ -282,6 +282,9 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                     scale_down_containers = no_in_cluster_pods - desired_replicas
                     if scale_down_containers < 0:
                         scale_down_containers = no_in_cluster_pods - 1
+
+                    if no_in_cluster_running_pods - scale_down_containers <= 0:
+                        continue
                     logger.info(f'Number of desired  {desired_replicas}')
                     logger.info(f'Number of all pods in cluster {no_in_cluster_pods}')
                     logger.info(f'Number of replicas to be scaled downed {scale_down_containers}')
