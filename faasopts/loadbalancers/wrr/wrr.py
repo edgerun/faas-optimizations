@@ -95,7 +95,7 @@ class LeastResponseTimeMetricProvider:
                                                                        now, 200)
                     traces = traces[traces['function'] == self.function]
                     if len(traces) == 0:
-                        self.record_response_time(replica_id, 1, now - 1)
+                        continue
                     else:
                         # in case it's an API gateway, we want to aggregate over all instances behind it
                         for idx, row in traces.iterrows():
