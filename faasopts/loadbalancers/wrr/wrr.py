@@ -93,15 +93,17 @@ class LeastResponseTimeMetricProvider:
                 try:
                     traces = self.trace_service.get_traces_api_gateway(replica.node.name, now - self.window,
                                                                        now, 200)
-                    traces = traces[traces['function'] == self.function]
-                    if len(traces) == 0:
+                    if traces is None or len(traces) == 0:
+                        # self.record_response_time(replica_id, 1, now)
                         continue
                     else:
+                        traces = traces[traces['function'] == self.function]
+
                         # in case it's an API gateway, we want to aggregate over all instances behind it
                         for idx, row in traces.iterrows():
                             self.record_response_time(replica_id, row['rtt'], row['ts'])
                 except Exception as e:
-                    logger.error(e)
+                    logger.exception(e)
         return self.rts
 
     def contains(self, replica_id: str):
