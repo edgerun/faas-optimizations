@@ -79,6 +79,4 @@ class OsmoticAutoscaler(BaseAutoscaler):
             logger.info("No pressure values calculated, no further execution")
             return None
         # Store calculated pressure values such that global scheduler can retrieve it
-        # TODO resolve pressure violations with new OsmoticGlobalScheduler here and then call faas system to create new replicas
-        # TODO implement a global scheduler that simply looks at the label and nothing else (this one must be compliant with the Scheduler interface)
         return pressure_values
