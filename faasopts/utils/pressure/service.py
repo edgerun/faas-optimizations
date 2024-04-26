@@ -2,7 +2,7 @@ from typing import List
 
 import pandas as pd
 
-from faasopts.autoscalers.base.pressure.osmotic import ScaleScheduleEvent
+from faasopts.autoscalers.base.pressure.autoscaler import ScaleScheduleEvent
 
 
 class OsmoticService:

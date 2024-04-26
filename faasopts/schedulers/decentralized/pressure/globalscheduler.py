@@ -15,7 +15,7 @@ from faas.util.constant import worker_role_label, zone_label, pod_type_label, ap
 from kubernetes.utils import parse_quantity
 from skippy.core.utils import parse_size_string
 
-from faasopts.autoscalers.base.pressure.osmotic import ScaleScheduleEvent, OsmoticScalerParameters
+from faasopts.autoscalers.base.pressure.autoscaler import ScaleScheduleEvent, PressureScalerParameters
 from faasopts.utils.pressure.service import OsmoticService
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ class ScaleScheduleEventHandler(abc.ABC):
 class PressureGlobalScheduler(GlobalScheduler):
     def __init__(self, scheduler_name: str, storage_local_schedulers: Dict[str, str], ctx: PlatformContext,
                  metrics: Metrics, delay, max_scale, osmotic_service: OsmoticService, now: Callable[[], float],
-                 parameters: OsmoticScalerParameters, replica_factory: FunctionReplicaFactory,
+                 parameters: PressureScalerParameters, replica_factory: FunctionReplicaFactory,
                  scale_schedule_event_handler: ScaleScheduleEventHandler):
         self.running = True
         self.scheduler_name = scheduler_name
