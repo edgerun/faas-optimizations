@@ -40,7 +40,7 @@ def has_valid_role_label(replica: FunctionReplica, node: FunctionNode) -> bool:
 
 
 class LocalBalancedScheduler(LocalScheduler):
-    def __init__(self, scheduler_name: str, cluster: str, ctx: PlatformContext, metrics: Metrics,
+    def __init__(self, BaseLocalSchedulerConfiguration, cluster: str, ctx: PlatformContext, metrics: Metrics,
                  global_scheduler_name="", delay=0):
         self.scheduler_name = scheduler_name
         self.cluster = cluster

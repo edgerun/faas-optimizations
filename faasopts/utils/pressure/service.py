@@ -2,10 +2,10 @@ from typing import List
 
 import pandas as pd
 
-from faasopts.autoscalers.base.pressure.autoscaler import ScaleScheduleEvent
+from faasopts.utils.pressure.api import ScaleScheduleEvent
 
 
-class OsmoticService:
+class PressureService:
 
     def save_pressure_values(self, pressure_values: pd.DataFrame) -> str:
         raise NotImplementedError()

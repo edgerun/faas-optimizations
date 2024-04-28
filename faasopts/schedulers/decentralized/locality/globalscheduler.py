@@ -1,35 +1,25 @@
 import logging
-import re
 import time
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
 from faas.context import PlatformContext
 from faas.system import Metrics, FunctionReplicaState, FunctionReplica, FunctionNode
-from faas.system.scheduling.decentralized import GlobalScheduler
-from faas.util.constant import worker_role_label
+from faas.system.scheduling.decentralized import GlobalScheduler, BaseGlobalSchedulerConfiguration
+from faas.util.constant import worker_role_label, zone_label
 from kubernetes.utils import parse_quantity
 from skippy.core.utils import parse_size_string
 
 logger = logging.getLogger(__name__)
 
 
-def extract_zone_out_of_name(name: str):
-    pattern = r'zone-(a|b|c)'
-    match = re.search(pattern, name)
-    if match:
-        return match.group(0)
-    return None
-
-
 class LocalityGlobalScheduler(GlobalScheduler):
-    def __init__(self, scheduler_name: str, storage_local_schedulers: Dict[str, str], ctx: PlatformContext,
-                 metrics: Metrics, delay, max_scale):
-        self.scheduler_name = scheduler_name
+    def __init__(self, config: BaseGlobalSchedulerConfiguration, storage_local_schedulers: Dict[str, str],
+                 ctx: PlatformContext,
+                 metrics: Metrics):
+        super().__init__(config)
         self.ctx = ctx
         self.metrics = metrics
-        self.delay = delay
-        self.max_scale = max_scale
         self.storage_local_schedulers = storage_local_schedulers
         self.zones = ctx.zone_service.get_zones()
 
@@ -46,8 +36,7 @@ class LocalityGlobalScheduler(GlobalScheduler):
             pod_per_zone = defaultdict(int)
             if len(nodes_available) > 0:
                 cpu_dict = defaultdict(list)
-                for node, has_enough in nodes_available:
-                    zone = extract_zone_out_of_name(node)
+                for node, zone, has_enough in nodes_available:
                     pod_per_zone[zone] = pod_per_zone[zone] + pod_per_node[node]
                     logger.info(f'{node} - {zone} - {pod_per_node[node]} - {pod_per_zone[zone]}')
                     if not has_enough:
@@ -73,7 +62,8 @@ class LocalityGlobalScheduler(GlobalScheduler):
             return found_scheduler, origin_cluster
 
     #
-    def nodes_available(self, min_cores_required: int, min_memory_required: int):
+    def nodes_available(self, min_cores_required: int, min_memory_required: int) -> Tuple[
+        List[Tuple[str, str, bool]], Dict[str, int]]:
         ready_nodes = []
         start_ts = time.time()
         pod_per_node = {}
@@ -111,9 +101,9 @@ class LocalityGlobalScheduler(GlobalScheduler):
 
             has_enough_resources = enough_cores and enough_memory
             if has_enough_resources:
-                ready_nodes.append((node_name, True))
+                ready_nodes.append((node_name, n.labels[zone_label], True))
             else:
-                ready_nodes.append((node_name, False))
+                ready_nodes.append((node_name, n.labels[zone_label], False))
         logger.info(ready_nodes)
         end_ts = time.time()
         self.metrics.log('nodes-available', end_ts - start_ts)
@@ -160,7 +150,7 @@ class LocalityGlobalScheduler(GlobalScheduler):
         self.metrics.log('nodes-available', end_ts - start_ts)
         return ready_nodes
 
-    def get_filtered_nodes(self, replica: FunctionReplica):
+    def get_filtered_nodes(self, replica: FunctionReplica) -> Tuple[List[Tuple[str, str, bool]], Dict[str, int]]:
         resources_requests = replica.container.get_resource_requirements()
         cpu_request = resources_requests.get('cpu')
         if cpu_request and type(cpu_request) is cpu_request:

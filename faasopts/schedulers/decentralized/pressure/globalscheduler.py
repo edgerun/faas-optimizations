@@ -1,7 +1,6 @@
 import abc
 import datetime
 import logging
-import re
 import time
 from collections import defaultdict
 from typing import Dict, List, Tuple, Callable, Optional
@@ -9,24 +8,17 @@ from typing import Dict, List, Tuple, Callable, Optional
 import pandas as pd
 from faas.context import PlatformContext, FunctionReplicaFactory
 from faas.system import Metrics, FunctionReplicaState, FunctionReplica, FunctionNode, FunctionDeployment
-from faas.system.scheduling.decentralized import GlobalScheduler
+from faas.system.scheduling.decentralized import GlobalScheduler, BaseGlobalSchedulerConfiguration
 from faas.util.constant import worker_role_label, zone_label, pod_type_label, api_gateway_type_label, function_label, \
     pod_pending
 from kubernetes.utils import parse_quantity
 from skippy.core.utils import parse_size_string
 
-from faasopts.autoscalers.base.pressure.autoscaler import ScaleScheduleEvent, PressureScalerParameters
-from faasopts.utils.pressure.service import OsmoticService
+from faasopts.utils.pressure.api import ScaleScheduleEvent, PressureScalerParameters
+from faasopts.utils.pressure.service import PressureService
 
 logger = logging.getLogger(__name__)
 
-
-def extract_zone_out_of_name(name: str):
-    pattern = r'zone-(a|b|c)'
-    match = re.search(pattern, name)
-    if match:
-        return match.group(0)
-    return None
 
 
 def is_zero_sum_action(create_events: Dict[str, List[str]], x: ScaleScheduleEvent):
@@ -46,24 +38,27 @@ class ScaleScheduleEventHandler(abc.ABC):
         raise NotImplementedError()
 
 
+class PressureGlobalSchedulerConfiguration(BaseGlobalSchedulerConfiguration):
+    parameters: Dict[str, PressureScalerParameters]
+    scale_schedule_event_handler: ScaleScheduleEventHandler
+
 class PressureGlobalScheduler(GlobalScheduler):
-    def __init__(self, scheduler_name: str, storage_local_schedulers: Dict[str, str], ctx: PlatformContext,
-                 metrics: Metrics, delay, max_scale, osmotic_service: OsmoticService, now: Callable[[], float],
-                 parameters: PressureScalerParameters, replica_factory: FunctionReplicaFactory,
-                 scale_schedule_event_handler: ScaleScheduleEventHandler):
+    def __init__(self, config: PressureGlobalSchedulerConfiguration, storage_local_schedulers: Dict[str, str],
+                 ctx: PlatformContext,
+                 metrics: Metrics, pressure_service: PressureService, now: Callable[[], float],
+                 replica_factory: FunctionReplicaFactory,
+                 ):
+        super().__init__(config)
         self.running = True
-        self.scheduler_name = scheduler_name
         self.ctx = ctx
         self.metrics = metrics
-        self.delay = delay
-        self.max_scale = max_scale
         self.storage_local_schedulers = storage_local_schedulers
         self.zones = ctx.zone_service.get_zones()
-        self.parameters = parameters
+        self.parameters = config.parameters
         self.now = now
         self.replica_factory = replica_factory
-        self.scale_schedule_event_handler = scale_schedule_event_handler
-        self.osmotic_service = osmotic_service
+        self.scale_schedule_event_handler = config.scale_schedule_event_handler
+        self.pressure_service = pressure_service
 
     def __str__(self):
         return f"GlobalScheduler: {self.scheduler_name}"
@@ -89,7 +84,7 @@ class PressureGlobalScheduler(GlobalScheduler):
     def run(self):
         while self.running:
             # wait for all autoscalers to finish
-            pressure_values: pd.DataFrame = self.osmotic_service.wait_for_all_pressures()
+            pressure_values: pd.DataFrame = self.pressure_service.wait_for_all_pressures()
             scale_schedule_events = self.find_clusters_for_autoscaler_decisions(pressure_values)
             self.scale_schedule_event_handler.handle(scale_schedule_events)
 
@@ -100,8 +95,7 @@ class PressureGlobalScheduler(GlobalScheduler):
 
         # Figure out up scaling actions, previous generated ids for intermediate results are passed in each replica as
         # labels
-        create_results = self.get_scale_up_actions(pressure_values, len(delete_results),
-                                                   self.parameters.max_containers)
+        create_results = self.get_scale_up_actions(pressure_values, len(delete_results))
         delete_results = self.remove_zero_sum_actions(create_results, delete_results)
 
         logger.info(f"figured out scaling, {len(create_results)} up scale events")
@@ -112,7 +106,7 @@ class PressureGlobalScheduler(GlobalScheduler):
         all_results.extend(create_results)
         return all_results
 
-    def get_scale_up_actions(self, pressure_values: pd.DataFrame, teardowns: int, max_replica: int) -> List[
+    def get_scale_up_actions(self, pressure_values: pd.DataFrame, teardowns: int) -> List[
         ScaleScheduleEvent]:
         """
         Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
@@ -123,6 +117,7 @@ class PressureGlobalScheduler(GlobalScheduler):
         new_pods = {}
         for under_pressure in under_pressures:
             deployment = under_pressure[1]
+            max_replica = self.parameters[deployment].max_containers
             running_pods = len(self.ctx.replica_service.get_function_replicas_of_deployment(deployment.name))
             pending_pods = len(
                 self.ctx.replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
@@ -402,10 +397,10 @@ class PressureGlobalScheduler(GlobalScheduler):
         return nodes_available
 
     def get_pressure_values(self, pressure_id: str) -> pd.DataFrame:
-        return self.osmotic_service.get_pressure_values(pressure_id)
+        return self.pressure_service.get_pressure_values(pressure_id)
 
     def get_delete_results(self, delete_results_id: str) -> List[ScaleScheduleEvent]:
-        raise self.osmotic_service.get_delete_results(delete_results_id)
+        raise self.pressure_service.get_delete_results(delete_results_id)
 
     def global_scheduling_policy(self, deployment: FunctionDeployment, target_gateway: FunctionReplica,
                                  pressure_per_zone: pd.DataFrame) -> Tuple[str, str]:
