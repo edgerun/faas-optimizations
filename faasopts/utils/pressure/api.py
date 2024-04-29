@@ -11,6 +11,7 @@ from faasopts.utils.pressure.calculation import LogisticFunctionParameters
 logger = logging.getLogger(__name__)
 
 
+@dataclass_json
 @dataclass
 class PressureScalerParameters:
     violates_threshold: Callable[[PlatformContext, FunctionReplica], bool]
