@@ -15,12 +15,16 @@ class PressureFunctionParameters:
     # this thresholds are used to determine functions under pressure
     max_threshold: float
     min_threshold: float
-    function_requirment: float
+    function_requirement: float
     # either 'latency' (in ms) or 'rtt' (in s)
     target_time_measure: str
     max_replicas: int
     pressure_names: List[str]
-    logistic_function_parameters: Optional[LogisticFunctionParameters] = None
+    a: float  # max
+    b: float  # bottom
+    c: float  # growth
+    d: float
+    offset: float  # offset of midpoint (values > 0 increase the y-value of the midpoint)
     percentile_duration: float = 90
 
 
