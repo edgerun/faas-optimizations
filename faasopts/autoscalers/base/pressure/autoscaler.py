@@ -8,7 +8,6 @@ from faas.system import FunctionReplica, Metrics
 from faas.util.constant import zone_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
-from faasopts.utils.pressure.api import PressureScalerParameters
 from faasopts.utils.pressure.calculation import PressureInput, PressureFunction
 from faasopts.utils.pressure.service import PressureService
 
