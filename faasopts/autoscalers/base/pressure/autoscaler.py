@@ -8,6 +8,7 @@ from faas.system import FunctionReplica, Metrics
 from faas.util.constant import zone_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
+from faasopts.utils.pressure.api import PressureAutoscalerParameters
 from faasopts.utils.pressure.calculation import PressureInput, PressureFunction
 from faasopts.utils.pressure.service import PressureService
 
@@ -16,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 class PressureAutoscaler(BaseAutoscaler):
 
-    def __init__(self, ctx: PlatformContext, parameters: Dict[str, PressureScalerParameters], gateway: FunctionReplica,
+    def __init__(self, ctx: PlatformContext, parameters: Dict[str, PressureAutoscalerParameters],
+                 gateway: FunctionReplica,
                  replica_factory: FunctionReplicaFactory, now: Callable[[], float], pressure_service: PressureService,
                  pressure_functions: Dict[str, PressureFunction], metrics: Metrics):
         self.ctx = ctx
