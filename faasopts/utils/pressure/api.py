@@ -1,11 +1,9 @@
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Dict
 
 from dataclasses_json import dataclass_json
 from faas.system import FunctionReplica
-
-from faasopts.utils.pressure.calculation import LogisticFunctionParameters
 
 logger = logging.getLogger(__name__)
 
@@ -25,15 +23,16 @@ class PressureFunctionParameters:
     c: float  # growth
     d: float
     offset: float  # offset of midpoint (values > 0 increase the y-value of the midpoint)
+    lookback: int
     percentile_duration: float = 90
 
 
 @dataclass_json
 @dataclass
 class PressureAutoscalerParameters:
+    # parameters per function (i.e., key: function, value: parameters for scaling)
     function_parameters: Dict[str, PressureFunctionParameters]
     max_latency: float
-    lookback: int
 
 
 @dataclass_json

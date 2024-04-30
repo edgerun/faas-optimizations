@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class PressureAutoscaler(BaseAutoscaler):
 
-    def __init__(self, ctx: PlatformContext, parameters: Dict[str, PressureAutoscalerParameters],
+    def __init__(self, ctx: PlatformContext, parameters: PressureAutoscalerParameters,
                  gateway: FunctionReplica,
                  replica_factory: FunctionReplicaFactory, now: Callable[[], float], pressure_service: PressureService,
                  pressure_functions: Dict[str, PressureFunction], metrics: Metrics):
@@ -46,10 +46,10 @@ class PressureAutoscaler(BaseAutoscaler):
         Results contains for each deployed function in the region the pressure value (grouped by client zones)
         Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
         """
-        for function, parameters in self.parameters.items():
+        for function, fn_parameters in self.parameters.function_parameters.items():
             gateway = self.gateway
             now = self.now()
-            past = now - parameters.lookback
+            past = now - fn_parameters.lookback
             traces = ctx.trace_service.get_traces_api_gateway(gateway.node.name, past, now, response_status=200)
             traces = traces[traces['function'] == function]
             gateway_node = ctx.node_service.find(gateway.node.name)
@@ -204,7 +204,7 @@ class PressureAutoscaler(BaseAutoscaler):
 
         now = self.now()
         pressure_input = PressureInput(
-            parameters=self.parameters[function],
+            parameters=self.parameters.function_parameters[function],
             client=client,
             client_replica_id=client_replica_id,
             gateway=self.gateway,

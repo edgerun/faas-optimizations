@@ -3,6 +3,7 @@ import datetime
 import logging
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Dict, List, Tuple, Callable, Optional
 
 import pandas as pd
@@ -14,7 +15,7 @@ from faas.util.constant import worker_role_label, zone_label, pod_type_label, ap
 from kubernetes.utils import parse_quantity
 from skippy.core.utils import parse_size_string
 
-from faasopts.utils.pressure.api import ScaleScheduleEvent, PressureScalerParameters
+from faasopts.utils.pressure.api import ScaleScheduleEvent, PressureAutoscalerParameters
 from faasopts.utils.pressure.service import PressureService
 
 logger = logging.getLogger(__name__)
@@ -38,8 +39,10 @@ class ScaleScheduleEventHandler(abc.ABC):
         raise NotImplementedError()
 
 
+@dataclass
 class PressureGlobalSchedulerConfiguration(BaseGlobalSchedulerConfiguration):
-    parameters: Dict[str, PressureScalerParameters]
+    # key: cluster, value: parameters
+    parameters: Dict[str, PressureAutoscalerParameters]
     scale_schedule_event_handler: ScaleScheduleEventHandler
 
 class PressureGlobalScheduler(GlobalScheduler):
@@ -117,7 +120,7 @@ class PressureGlobalScheduler(GlobalScheduler):
         new_pods = {}
         for under_pressure in under_pressures:
             deployment = under_pressure[1]
-            max_replica = self.parameters[deployment].max_containers
+            max_replica = self.parameters[deployment.name].max_replicas
             running_pods = len(self.ctx.replica_service.get_function_replicas_of_deployment(deployment.name))
             pending_pods = len(
                 self.ctx.replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
@@ -205,9 +208,12 @@ class PressureGlobalScheduler(GlobalScheduler):
                     # client zone = x
                     # check if pressure from x on a is too high, if yes -> try to schedule instance in x!
                     try:
-                        mean_pressure = pressure_per_gateway.loc[deployment.fn_name].loc[zone].loc[client_zone][
+                        mean_pressure = pressure_per_gateway.loc[deployment.name]
+                        if len(mean_pressure) == 0 or len(mean_pressure.loc[client_zone]) == 0:
+                            continue
+                        mean_pressure = mean_pressure.loc[zone].loc[client_zone][
                             'pressure']
-                        if mean_pressure > self.parameters.max_threshold:
+                        if mean_pressure > self.parameters[deployment.name].max_threshold:
                             # at this point we know where the origin for the high pressure comes from
                             target_gateway = self.ctx.replica_service.find_function_replicas_with_labels(
                                 labels={pod_type_label: api_gateway_type_label},
@@ -239,8 +245,11 @@ class PressureGlobalScheduler(GlobalScheduler):
             zone = gateway_node.labels[zone_label]
             for deployment in ctx.deployment_service.get_deployments():
                 try:
-                    mean_pressure = pressure_df.loc[deployment.fn_name].loc[zone]['pressure']
-                    if mean_pressure < self.parameters.min_threshold:
+                    mean_pressure = pressure_df.loc[deployment.name].loc[zone]['pressure']
+                    if len(pressure_df.loc[deployment.name]) == 0 or len(
+                            pressure_df.loc[deployment.name].loc[zone]) == 0:
+                        continue
+                    if mean_pressure < self.parameters[deployment.name].min_threshold:
                         pending_pods = ctx.replica_service.find_function_replicas_with_labels(
                             labels={
                                 function_label: deployment.fn_name,
@@ -253,7 +262,7 @@ class PressureGlobalScheduler(GlobalScheduler):
                         )
                         if len(pending_pods) > 0:
                             logger.info(
-                                f"Wanted to scale down FN {deployment.fn_name} in zone {zone}, but had pending pods.")
+                                f"Wanted to scale down FN {deployment.name} in zone {zone}, but had pending pods.")
                         else:
                             not_under_pressure.append((gateway, deployment))
                 except KeyError:
@@ -321,7 +330,7 @@ class PressureGlobalScheduler(GlobalScheduler):
     def replica_with_lowest_resource_usage(self, replicas: List[FunctionReplica], ctx: PlatformContext) -> Optional[
         FunctionReplica]:
         cpus = []
-        lookback = self.parameters.lookback
+        lookback = self.parameters[replicas[0].function.name].lookback
         for replica in replicas:
             start = datetime.datetime.now() - datetime.timedelta(seconds=lookback)
             end = datetime.datetime.now()
@@ -448,7 +457,7 @@ class PressureGlobalScheduler(GlobalScheduler):
                 p_c_x_f = t[1]
                 target_zone = t[2]
                 # check if pressure is already violated
-                if p_c_x_f < self.parameters.max_threshold:
+                if p_c_x_f < self.parameters[deployment.name].max_threshold:
                     # check if new target has enough resources
                     if len(self.get_filtered_nodes_in_cluster(replica, target_zone)) > 0:
                         found_scheduler = self.storage_local_schedulers[target_zone]
@@ -467,4 +476,4 @@ class PressureGlobalScheduler(GlobalScheduler):
             return '', ''
 
     def handle_scale_schedule_events(self, scale_schedule_events: List[ScaleScheduleEvent]):
-        self.scale_schedule_event_handler
+        self.scale_schedule_event_handler.handle(scale_schedule_events)

@@ -5,7 +5,7 @@ from typing import List
 
 from faas.context import PlatformContext
 from faas.system import Metrics, FunctionReplicaState, FunctionReplica, FunctionNode
-from faas.system.scheduling.decentralized import LocalScheduler
+from faas.system.scheduling.decentralized import LocalScheduler, BaseLocalSchedulerConfiguration
 from faas.util.constant import client_role_label, worker_role_label, controller_role_label
 from kubernetes.utils import parse_quantity
 from skippy.core.utils import parse_size_string
@@ -40,20 +40,17 @@ def has_valid_role_label(replica: FunctionReplica, node: FunctionNode) -> bool:
 
 
 class LocalCpuScheduler(LocalScheduler):
-    def __init__(self, scheduler_name: str, cluster: str, ctx: PlatformContext, metrics: Metrics,
-                 global_scheduler_name="", delay=0):
-        self.scheduler_name = scheduler_name
-        self.cluster = cluster
+    def __init__(self, config: BaseLocalSchedulerConfiguration, ctx: PlatformContext, metrics: Metrics, delay=0):
+        super().__init__(config)
         self.ctx = ctx
         self.metrics = metrics
         self.delay = delay
-        self.global_scheduler_name = global_scheduler_name
 
     def __str__(self):
         return f"Scheduler: {self.scheduler_name}"
 
     def schedule(self, replica: FunctionReplica) -> str:
-        nodes_available = self.get_filtered_nodes_in_cluster(replica, self.cluster)
+        nodes_available = self.get_filtered_nodes_in_cluster(replica, self.zone)
         nodes_by_name = self.ctx.node_service.get_nodes_by_name()
         if len(nodes_available) > 0:
             cpus = []

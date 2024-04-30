@@ -1,38 +1,11 @@
 import logging
-import logging
-import math
-import threading
-from dataclasses import dataclass
-from typing import Dict, Callable, Union, List
+from typing import Union, List
 
-import numpy as np
-from dataclasses_json import dataclass_json
-from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService, \
-    ResponseRepresentation, FunctionReplicaFactory
-from faas.system import FaasSystem, Metrics, FunctionReplicaState, FunctionReplica
-from faas.util.constant import zone_label, worker_role_label
+from faas.system import FunctionReplica
 
-from faasopts.autoscalers.api import BaseAutoscaler
 from faasopts.autoscalers.base.hpa.decentralized.latency import DecentralizedHorizontalLatencyPodAutoscaler
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass_json
-@dataclass
-class HorizontalLatencyPodAutoscalerParameters:
-    # the past (in seconds) that should be considered when looking at monitoring data
-    lookback: int
-
-    # either latency (in ms) or rtt (in s)
-    target_time_measure: str
-
-    #  the tolerance within the target metric can be without triggering in our out scaling
-    threshold_tolerance: float = 0.0
-    # ms when latency, s when rtt
-    target_duration: float = 100
-    # which percentile should be used to calculate ratio
-    percentile_duration: float = 90
 
 
 class SimulationDecentralizedHorizontalLatencyPodAutoscaler(DecentralizedHorizontalLatencyPodAutoscaler):
@@ -42,30 +15,6 @@ class SimulationDecentralizedHorizontalLatencyPodAutoscaler(DecentralizedHorizon
 
     Reference: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/
     """
-
-    def __init__(self, parameters: Dict[str, HorizontalLatencyPodAutoscalerParameters], ctx: PlatformContext,
-                 faas: FaasSystem,
-                 metrics: Metrics, now: Callable[[], float], cluster: str = None,
-                 replica_factory: FunctionReplicaFactory = None):
-        """
-        Initializes the HPA latency-based implementation
-        :param parameters: HPA parameters per deployment that dictate various configuration values
-        :param ctx: the HPA will get any information (i.e., monitoring data) from the context
-        :param faas: the system will be invoked when scaling in our out
-        :param metrics: is used to log any scaling decisions for later analysis
-        :param cluster: if set, only looks at replica that reside in the given cluster (ether.edgerun.io/zone label)
-        :param replica_factory: if cluster argument is passed, this replica_factory will be used to create replicas with an appropriate set node selector
-        """
-        self.parameters = parameters
-        self.ctx = ctx
-        self.faas = faas
-        self.metrics = metrics
-        self.now = now
-        self.cluster = cluster
-        self.replica_factory = replica_factory
-        self.lock = threading.Lock()
-        if cluster and not replica_factory:
-            raise AttributeError('Replica Factory must be set when given cluster.')
 
     def run(self):
         """

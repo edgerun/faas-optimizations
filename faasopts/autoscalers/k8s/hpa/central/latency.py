@@ -1,34 +1,17 @@
-import datetime
 import logging
 import math
-from dataclasses import dataclass
 from typing import Dict, Callable, Union, List
 
 import numpy as np
 from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService, \
     ResponseRepresentation, FunctionReplicaFactory
-from faas.system import FaasSystem, Metrics, FunctionReplicaState, Clock, FunctionReplica
+from faas.system import FaasSystem, Metrics, FunctionReplicaState, FunctionReplica
 from faas.util.constant import zone_label, worker_role_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
+from faasopts.autoscalers.base.hpa.decentralized.latency import HorizontalLatencyPodAutoscalerParameters
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class HorizontalLatencyPodAutoscalerParameters:
-    # the past (in seconds) that should be considered when looking at monitoring data
-    lookback: int
-
-    # either latency (in ms) or rtt (in s)
-    target_time_measure: str
-
-    #  the tolerance within the target metric can be without triggering in our out scaling
-    threshold_tolerance: float = 0.0
-    # ms when latency, s when rtt
-    target_duration: float = 100
-    # which percentile should be used to calculate ratio
-    percentile_duration: float = 90
 
 
 class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
@@ -110,6 +93,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             if spec is None:
                 continue
             logger.info(f'Deployment passed if check {deployment.name}')
+
             def access(r: ResponseRepresentation):
                 return r.__dict__[spec.target_time_measure]
 
@@ -118,8 +102,7 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             pending_pods = replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
                                                                                state=FunctionReplicaState.PENDING)
             conceiving_pods = replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
-                                                                               state=FunctionReplicaState.CONCEIVED)
-
+                                                                                  state=FunctionReplicaState.CONCEIVED)
 
             if self.cluster is not None:
                 running_pods = [x for x in running_pods if x.labels[zone_label] == self.cluster]
@@ -129,7 +112,8 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             no_of_running_pods = len(running_pods) if running_pods is not None else 0
             no_of_pending_pods = len(pending_pods) if pending_pods is not None else 0
             no_of_conceiving_pods = len(conceiving_pods) if conceiving_pods is not None else 0
-            logger.info(f'no of running pods: {no_of_running_pods}, no of pending pods: {no_of_pending_pods}, no of conceiving pods: {no_of_conceiving_pods}')
+            logger.info(
+                f'no of running pods: {no_of_running_pods}, no of pending pods: {no_of_pending_pods}, no of conceiving pods: {no_of_conceiving_pods}')
             no_of_pods = no_of_running_pods + no_of_pending_pods + no_of_conceiving_pods
             now = self.now()
             lookback_seconds_ago = now - spec.lookback
@@ -138,10 +122,12 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
             logger.info(f"Fetch traces {spec.lookback} seconds ago")
 
             if self.cluster is not None:
-                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now, access,
-                                                               zone=self.cluster)
+                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now,
+                                                                       access,
+                                                                       zone=self.cluster)
             else:
-                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now, access)
+                traces = trace_service.get_values_for_function_by_sent(deployment.name, lookback_seconds_ago, now,
+                                                                       access)
             if traces is None or len(traces) == 0:
                 logger.info(f'No trace data for function: {deployment.name}, skip iteration')
                 record = {
@@ -233,7 +219,8 @@ class HorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 # check if new number of pods is over the maximum. if yes => set to minimum
                 scale_max = deployment.scaling_configuration.scale_max
                 if scale_max is not None and desired_replicas > scale_max:
-                    logger.info(f'Number of desired replicas is bigger than scale max ({desired_replicas} > {scale_max}) -> scale to max replicas if possible.')
+                    logger.info(
+                        f'Number of desired replicas is bigger than scale max ({desired_replicas} > {scale_max}) -> scale to max replicas if possible.')
                     desired_replicas = scale_max
 
                 scale_up_replicas_no = desired_replicas - no_of_pods

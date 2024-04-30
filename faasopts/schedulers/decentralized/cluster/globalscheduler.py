@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 def extract_zone_out_of_name(name: str):
-    pattern = r'zone-(a|b|c)'
+    pattern = r'(zone)-([a-z])'
     match = re.search(pattern, name)
     if match:
         return match.group(0)

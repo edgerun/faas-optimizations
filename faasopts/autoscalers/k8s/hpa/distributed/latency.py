@@ -1,34 +1,30 @@
-import datetime
 import logging
 import math
-from dataclasses import dataclass
 from typing import Dict, Callable, Union, List
 
 import numpy as np
 from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService, \
     ResponseRepresentation, FunctionReplicaFactory
-from faas.system import FaasSystem, Metrics, FunctionReplicaState, Clock, FunctionReplica
+from faas.system import FaasSystem, Metrics, FunctionReplicaState, FunctionReplica
 from faas.util.constant import zone_label, worker_role_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
+from faasopts.autoscalers.base.hpa.decentralized.latency import HorizontalLatencyPodAutoscalerParameters
+import logging
+import math
+from typing import Dict, Callable, Union, List
+
+import numpy as np
+from faas.context import PlatformContext, FunctionReplicaService, FunctionDeploymentService, TraceService, \
+    ResponseRepresentation, FunctionReplicaFactory
+from faas.system import FaasSystem, Metrics, FunctionReplicaState, FunctionReplica
+from faas.util.constant import zone_label, worker_role_label
+
+from faasopts.autoscalers.api import BaseAutoscaler
+from faasopts.autoscalers.base.hpa.decentralized.latency import HorizontalLatencyPodAutoscalerParameters
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class HorizontalLatencyPodAutoscalerParameters:
-    # the past (in seconds) that should be considered when looking at monitoring data
-    lookback: int
-
-    # either latency (in ms) or rtt (in s)
-    target_time_measure: str
-
-    #  the tolerance within the target metric can be without triggering in our out scaling
-    threshold_tolerance: float = 0.0
-    # ms when latency, s when rtt
-    target_duration: float = 100
-    # which percentile should be used to calculate ratio
-    percentile_duration: float = 90
 
 
 class DistributedHorizontalLatencyPodAutoscaler(BaseAutoscaler):

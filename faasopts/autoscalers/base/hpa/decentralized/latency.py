@@ -19,19 +19,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass_json
 @dataclass
-class HorizontalLatencyPodAutoscalerParameters:
-    # the past (in seconds) that should be considered when looking at monitoring data
-    lookback: int
-
+class HorizontalLatencyFunctionParameters:
     # either latency (in ms) or rtt (in s)
     target_time_measure: str
-
+    # determines time window for which we lookback, in seconds
+    lookback: int
     #  the tolerance within the target metric can be without triggering in our out scaling
     threshold_tolerance: float = 0.0
     # ms when latency, s when rtt
     target_duration: float = 100
     # which percentile should be used to calculate ratio
     percentile_duration: float = 90
+
+@dataclass_json
+@dataclass
+class HorizontalLatencyPodAutoscalerParameters:
+    function_parameters: Dict[str, HorizontalLatencyFunctionParameters]
+    # the past (in seconds) that should be considered when looking at monitoring data
 
 
 class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
@@ -42,7 +46,7 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
     Reference: https://kubernetes.io/docs/tasks/run-application/horizontal-pod-autoscale/
     """
 
-    def __init__(self, parameters: Dict[str, HorizontalLatencyPodAutoscalerParameters], ctx: PlatformContext,
+    def __init__(self, parameters: HorizontalLatencyPodAutoscalerParameters, ctx: PlatformContext,
                  faas: FaasSystem,
                  metrics: Metrics, now: Callable[[], float], cluster: str = None,
                  replica_factory: FunctionReplicaFactory = None):
@@ -111,7 +115,7 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
             actions = []
             for deployment in deployment_service.get_deployments():
                 logger.info(f'HLPA scaling for function {deployment.name} in cluster {self.cluster}')
-                spec = self.parameters.get(deployment.name, None)
+                spec = self.parameters.function_parameters.get(deployment.name, None)
                 if spec is None:
                     continue
                 if deployment.name == 'api-gateway':

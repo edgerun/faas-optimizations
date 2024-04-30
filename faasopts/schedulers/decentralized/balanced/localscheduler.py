@@ -5,7 +5,7 @@ from typing import List
 
 from faas.context import PlatformContext
 from faas.system import Metrics, FunctionReplica, FunctionNode, FunctionReplicaState
-from faas.system.scheduling.decentralized import LocalScheduler
+from faas.system.scheduling.decentralized import LocalScheduler, BaseLocalSchedulerConfiguration
 from faas.util.constant import client_role_label, worker_role_label, controller_role_label
 from kubernetes.utils import parse_quantity
 from skippy.core.utils import parse_size_string
@@ -40,20 +40,17 @@ def has_valid_role_label(replica: FunctionReplica, node: FunctionNode) -> bool:
 
 
 class LocalBalancedScheduler(LocalScheduler):
-    def __init__(self, BaseLocalSchedulerConfiguration, cluster: str, ctx: PlatformContext, metrics: Metrics,
-                 global_scheduler_name="", delay=0):
-        self.scheduler_name = scheduler_name
-        self.cluster = cluster
+    def __init__(self, config: BaseLocalSchedulerConfiguration, ctx: PlatformContext, metrics: Metrics, delay=0):
+        super().__init__(config)
         self.ctx = ctx
         self.metrics = metrics
         self.delay = delay
-        self.global_scheduler_name = global_scheduler_name
 
     def __str__(self):
         return f"Scheduler: {self.scheduler_name}"
 
     def schedule(self, replica: FunctionReplica) -> str:
-        nodes_available = self.get_filtered_nodes_in_cluster(replica, self.cluster)
+        nodes_available = self.get_filtered_nodes_in_cluster(replica, self.zone)
         if len(nodes_available) > 0:
             nodes_available, pod_per_node = self.get_filtered_nodes(replica)
             pods_per_node = []
@@ -89,7 +86,7 @@ class LocalBalancedScheduler(LocalScheduler):
         ready_nodes = []
         start_ts = time.time()
         pod_per_node = {}
-        nodes: List[FunctionNode] = self.ctx.node_service.find_nodes_in_zone(self.cluster)
+        nodes: List[FunctionNode] = self.ctx.node_service.find_nodes_in_zone(self.zone)
         for n in nodes:
             if n.labels.get(worker_role_label) is None:
                 continue
