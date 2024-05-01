@@ -38,12 +38,14 @@ class ScaleScheduleEventHandler(abc.ABC):
     def handle(self, scale_event: List[ScaleScheduleEvent]):
         raise NotImplementedError()
 
+def scale_schedule_handler_factory(handler_type: str):
+    raise NotImplementedError()
 
 @dataclass
 class PressureGlobalSchedulerConfiguration(BaseGlobalSchedulerConfiguration):
-    # key: cluster, value: parameters
+    # key: zone, value: parameters
     parameters: Dict[str, PressureAutoscalerParameters]
-    scale_schedule_event_handler: ScaleScheduleEventHandler
+    scale_schedule_event_handler_type: str
 
 class PressureGlobalScheduler(GlobalScheduler):
     def __init__(self, config: PressureGlobalSchedulerConfiguration, storage_local_schedulers: Dict[str, str],
