@@ -31,11 +31,23 @@ class HorizontalLatencyFunctionParameters:
     # which percentile should be used to calculate ratio
     percentile_duration: float = 90
 
+    def copy(self):
+        return HorizontalLatencyFunctionParameters(
+            self.target_time_measure, self.lookback, self.threshold_tolerance, self.target_duration,
+            self.percentile_duration
+        )
+
+
 @dataclass_json
 @dataclass
 class HorizontalLatencyPodAutoscalerParameters:
     function_parameters: Dict[str, HorizontalLatencyFunctionParameters]
-    # the past (in seconds) that should be considered when looking at monitoring data
+
+    def copy(self):
+        copied_parameters = {}
+        for fn, parameters in self.function_parameters.items():
+            copied_parameters[fn] = parameters.copy()
+        return HorizontalLatencyPodAutoscalerParameters(copied_parameters)
 
 
 class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
@@ -225,7 +237,8 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                 desired_replicas = math.ceil(no_in_cluster_running_pods * (base_scale_ratio))
                 logger.info(f"Desired {desired_replicas}")
                 logger.info(f"Current Running {no_in_cluster_running_pods}")
-                logger.info(f"Current Running + pending/conceived {no_in_cluster_pending_pods + no_in_cluster_conceiving_pods}")
+                logger.info(
+                    f"Current Running + pending/conceived {no_in_cluster_pending_pods + no_in_cluster_conceiving_pods}")
                 if desired_replicas == no_of_pods:
                     logger.info(f"No scaling actions necessary for {deployment.name}")
                     record = {
@@ -257,7 +270,7 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
                         desired_replicas = scale_max
 
                     scale_up_replicas_no = desired_replicas - (
-                                no_in_cluster_pods + no_in_cluster_conceiving_pods + no_in_cluster_pending_pods)
+                            no_in_cluster_pods + no_in_cluster_conceiving_pods + no_in_cluster_pending_pods)
                     if scale_up_replicas_no < 0:
                         logger.info('No scaling necessary')
                         continue
@@ -341,4 +354,3 @@ class DecentralizedHorizontalLatencyPodAutoscaler(BaseAutoscaler):
             self.parameters[fn] = params
         finally:
             self.lock.release()
-

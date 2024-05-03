@@ -47,6 +47,12 @@ class PressureGlobalSchedulerConfiguration(BaseGlobalSchedulerConfiguration):
     parameters: Dict[str, PressureAutoscalerParameters]
     scale_schedule_event_handler_type: str
 
+    def copy(self):
+        copied_parameters = {}
+        for zone, params in self.parameters.items():
+            copied_parameters[zone] = params.copy()
+        return PressureGlobalSchedulerConfiguration(copied_parameters, self.scale_schedule_event_handler_type)
+
 class PressureGlobalScheduler(GlobalScheduler):
     def __init__(self, config: PressureGlobalSchedulerConfiguration, storage_local_schedulers: Dict[str, str],
                  ctx: PlatformContext,

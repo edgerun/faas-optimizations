@@ -214,7 +214,8 @@ class PressureAutoscaler(BaseAutoscaler):
             ctx=ctx
         )
         val = 1
-        for pressure in self.parameters[function].pressures:
-            val *= self.pressure_functions[pressure].calculate_weighted_pressure(pressure_input)
+        for name, pressure in self.pressure_functions.items():
+            weight = self.parameters.function_parameters[function].pressure_weights[name]
+            val *= (pressure.calculate_pressure(pressure_input) * weight)
 
         return val

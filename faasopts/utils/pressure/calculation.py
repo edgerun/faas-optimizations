@@ -47,14 +47,8 @@ class PressureInput:
 
 class PressureFunction(abc.ABC):
 
-    def __init__(self, weight: float):
-        self.weight = weight
-
     def calculate_pressure(self, pressure_input: PressureInput) -> float:
         raise NotImplementedError()
-
-    def calculate_weighted_pressure(self, pressure_input: PressureInput) -> float:
-        return self.weight * self.calculate_pressure(pressure_input)
 
     def name(self) -> str:
         raise NotImplementedError()
