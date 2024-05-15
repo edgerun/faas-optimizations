@@ -8,7 +8,7 @@ from faas.context import PlatformContext
 from faas.system import FunctionReplica
 from faas.util.constant import pod_type_label, api_gateway_type_label, zone_label, function_label
 
-from faasopts.autoscalers.base.pressure.autoscaler import PressureScalerParameters
+from faasopts.utils.pressure.api import PressureAutoscalerParameters, PressureFunctionParameters
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def logistic_curve(x, a, b, c, d):
 
 @dataclass
 class PressureInput:
-    parameters: PressureScalerParameters
+    parameters: PressureAutoscalerParameters
     client: str
     client_replica_id: str
     gateway: FunctionReplica
@@ -74,7 +74,7 @@ class PressureRTTLogFunction(PressureFunction):
         fn = pressure_input.function
         now = pressure_input.now
         ctx = pressure_input.ctx
-        return pressure_rtt_log(parameters, client, client_replica_id, gateway, fn, now, ctx)
+        return pressure_rtt_log(parameters[fn], client, client_replica_id, gateway, fn, now, ctx)
 
     def name(self) -> str:
         return 'rtt_log'
@@ -128,8 +128,8 @@ class PressureLatencyReqLogFunction(PressureFunction):
         gateway = pressure_input.gateway
         fn = pressure_input.function
         ctx = pressure_input.ctx
-        required_latency = parameters.function_requirements[fn]
-        return pressure_latency_req_log(parameters, client_replica_id, required_latency, gateway, ctx)
+        required_latency = parameters[fn].function_requirements[fn]
+        return pressure_latency_req_log(parameters[fn], client_replica_id, required_latency, gateway, ctx)
 
     def name(self) -> str:
         return 'latency_req_log'
@@ -143,20 +143,20 @@ class PressureCpuUsageFunction(PressureFunction):
         gateway = pressure_input.gateway
         fn = pressure_input.function
         ctx = pressure_input.ctx
-        return pressure_cpu_usage(parameters, fn, gateway, now, ctx)
+        return pressure_cpu_usage(parameters.function_parameters[fn], fn, gateway, now, ctx)
 
     def name(self) -> str:
         return 'cpu_usage'
 
 
-def pressure_rtt_log(parameters: PressureScalerParameters, client: str, client_replica_id: str,
+def pressure_rtt_log(parameters: PressureFunctionParameters, client: str, client_replica_id: str,
                      gateway: FunctionReplica, fn: str,
                      now: float, ctx: PlatformContext):
-    a = parameters.logistic_function_parameters.a
-    b = parameters.logistic_function_parameters.b
-    c = parameters.logistic_function_parameters.c
-    d = parameters.logistic_function_parameters.d
-    offset = parameters.logistic_function_parameters.offset
+    a = parameters.a
+    b = parameters.b
+    c = parameters.c
+    d = parameters.d
+    offset = parameters.offset
     client_node_name = ctx.replica_service.get_function_replica_by_id(client_replica_id).node.name
     client_node = ctx.node_service.find(client_node_name)
 
@@ -311,12 +311,12 @@ def pressure_latency_fulfillment(client_replica_id: str, required_latency: float
     return p_lat_a_x_f
 
 
-def pressure_latency_req_log(parameters: PressureScalerParameters, client_replica_id: str, latency_requirement: float,
+def pressure_latency_req_log(parameters: PressureFunctionParameters, client_replica_id: str, latency_requirement: float,
                              gateway: FunctionReplica, ctx: PlatformContext):
-    a = parameters.logistic_function_parameters.a
-    b = parameters.logistic_function_parameters.b
-    c = parameters.logistic_function_parameters.c
-    offset = parameters.logistic_function_parameters.offset
+    a = parameters.a
+    b = parameters.b
+    c = parameters.c
+    offset = parameters.offset
 
     client_node = ctx.replica_service.get_function_replica_by_id(client_replica_id)
     client_gateway_node = \
@@ -341,7 +341,7 @@ def pressure_latency_req_log(parameters: PressureScalerParameters, client_replic
     return p_lat_a_x_f
 
 
-def pressure_cpu_usage(parameters: PressureScalerParameters, fn: str, gateway: FunctionReplica, now: float,
+def pressure_cpu_usage(parameters: PressureFunctionParameters, fn: str, gateway: FunctionReplica, now: float,
                        ctx: PlatformContext) -> float:
     gateway_node = gateway.node
     zone = gateway_node.labels[zone_label]
