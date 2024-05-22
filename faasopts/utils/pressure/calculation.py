@@ -1,14 +1,15 @@
 import abc
 import logging
 from dataclasses import dataclass
+from typing import List, Tuple, Dict, Callable
 
 import numpy as np
 import pandas as pd
 from faas.context import PlatformContext
-from faas.system import FunctionReplica
-from faas.util.constant import pod_type_label, api_gateway_type_label, zone_label, function_label
+from faas.system import FunctionReplica, FunctionDeployment
+from faas.util.constant import pod_type_label, api_gateway_type_label, zone_label, function_label, pod_pending
 
-from faasopts.utils.pressure.api import PressureAutoscalerParameters, PressureFunctionParameters
+from faasopts.utils.pressure.api import PressureAutoscalerParameters, PressureFunctionParameters, ScaleScheduleEvent
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,12 @@ class LogisticFunctionParameters:
     d: float
     offset: float  # offset of midpoint (values > 0 increase the y-value of the midpoint)
 
+
+@dataclass
+class PressureResult:
+    target_gateway: FunctionReplica
+    origin_gateway: FunctionReplica
+    deployment: FunctionDeployment
 
 def logistic_curve(x, a, b, c, d):
     """
@@ -374,3 +381,189 @@ def pressure_cpu_usage(parameters: PressureFunctionParameters, fn: str, gateway:
     # if 1 => fully utilized
     cpu_mean = mean_per_pod['percentage'].mean() / 100
     return cpu_mean
+
+
+def get_scale_down_actions(pressure_values: pd.DataFrame, ctx: PlatformContext,
+                           parameters: Dict[str, PressureAutoscalerParameters]) -> List[ScaleScheduleEvent]:
+    """
+     Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
+     """
+    not_under_pressure = is_not_under_pressure(pressure_values, ctx, parameters)
+    logger.info("not under pressure_gateway %d", len(not_under_pressure))
+    result = teardown_policy(ctx, not_under_pressure)
+    return result
+
+
+def get_under_pressure(pressure_values: pd.DataFrame, teardowns: int, ctx: PlatformContext,
+                       parameters: Dict[str, PressureAutoscalerParameters]) -> List[
+    PressureResult]:
+    """
+    Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
+    """
+    under_pressures = is_under_pressure(pressure_values, ctx, parameters)
+    logger.info(" under pressure_gateway %d", len(under_pressures))
+    under_pressure_new = []
+    new_pods = {}
+    for under_pressure in under_pressures:
+        deployment = under_pressure.deployment
+        max_replica = deployment.scaling_configuration.scale_max
+        running_pods = len(ctx.replica_service.get_function_replicas_of_deployment(deployment.name))
+        pending_pods = len(
+            ctx.replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
+                                                                    state=pod_pending))
+        all_pods = running_pods + pending_pods
+        no_new_pods = new_pods.get(deployment.name, 0)
+        if ((all_pods + no_new_pods) - teardowns) < max_replica:
+            under_pressure_new.append(under_pressure)
+            if new_pods.get(deployment.name, None) is None:
+                new_pods[deployment.name] = 1
+            else:
+                new_pods[deployment.name] += 1
+
+    return under_pressure_new
+
+
+def is_under_pressure(pressure_per_gateway: pd.DataFrame, ctx: PlatformContext,
+                      parameters: Dict[str, PressureAutoscalerParameters]) -> List[
+    PressureResult]:
+    """
+   Checks for each gateway and deployment if its current pressure violates the threshold
+   :return: gateway and deployment tuples that are under pressure
+   """
+    under_pressure = []
+    if len(pressure_per_gateway) == 0:
+        logger.info("No pressure values")
+        return []
+    # reduce df to look at the mean pressure over all clients per  function and zone
+    for gateway in ctx.replica_service.find_function_replicas_with_labels(
+            {pod_type_label: api_gateway_type_label}):
+        gateway_node = gateway.node
+        zone = gateway_node.labels[zone_label]
+        for deployment in ctx.deployment_service.get_deployments():
+            for client_zone in ctx.zone_service.get_zones():
+                # client zone = x
+                # check if pressure from x on a is too high, if yes -> try to schedule instance in x!
+                try:
+                    mean_pressure = pressure_per_gateway.loc[deployment.name]
+                    if len(mean_pressure) == 0 or len(mean_pressure.loc[zone]) == 0 or len(
+                            mean_pressure.loc[zone].loc[client_zone]) == 0:
+                        continue
+                    mean_pressure = mean_pressure.loc[zone].loc[client_zone][
+                        'pressure']
+                    if mean_pressure > parameters[zone].function_parameters[deployment.name].max_threshold:
+                        # at this point we know where the origin for the high pressure comes from
+                        target_gateway = ctx.replica_service.find_function_replicas_with_labels(
+                            labels={pod_type_label: api_gateway_type_label},
+                            node_labels={zone_label: client_zone})[0]
+                        under_pressure.append(PressureResult(target_gateway, gateway, deployment))
+                except KeyError:
+                    pass
+    return under_pressure
+
+
+def is_not_under_pressure(pressure_values: pd.DataFrame, ctx: PlatformContext,
+                          parameters: Dict[str, PressureAutoscalerParameters]) -> List[
+    Tuple[FunctionReplica, FunctionDeployment]]:
+    """
+    Checks for each gateway if its current pressure violates the threshold
+    Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
+    :return: gateways that are under pressure
+    """
+
+    not_under_pressure = []
+    # reduce df to look at the mean pressure over all clients per  function and zone
+    if len(pressure_values) == 0:
+        logger.info("No pressure values")
+        return []
+
+    pressure_df = pressure_values.groupby(['fn', 'fn_zone']).mean()
+    for gateway in ctx.replica_service.find_function_replicas_with_labels(
+            {pod_type_label: api_gateway_type_label}):
+        gateway_node = gateway.node
+        zone = gateway_node.labels[zone_label]
+        for deployment in ctx.deployment_service.get_deployments():
+            try:
+                mean_pressure = pressure_df.loc[deployment.name].loc[zone]['pressure']
+                if len(pressure_df.loc[deployment.name]) == 0 or len(
+                        pressure_df.loc[deployment.name].loc[zone]) == 0:
+                    continue
+                if mean_pressure < parameters[zone].function_parameters[deployment.name].min_threshold:
+                    pending_pods = ctx.replica_service.find_function_replicas_with_labels(
+                        labels={
+                            function_label: deployment.fn_name,
+                        },
+                        node_labels={
+                            zone_label: zone
+                        },
+                        running=False,
+                        state=pod_pending
+                    )
+                    if len(pending_pods) > 0:
+                        logger.info(
+                            f"Wanted to scale down FN {deployment.name} in zone {zone}, but had pending pods.")
+                    else:
+                        not_under_pressure.append((gateway, deployment))
+            except KeyError:
+                if deployment.labels.get(function_label, None) is not None:
+                    logger.info(f'No pressure values found for {zone} - {deployment} - try to shut down')
+                    not_under_pressure.append((gateway, deployment))
+    return not_under_pressure
+
+
+def teardown_policy(
+        self,
+        ctx: PlatformContext,
+        scale_functions: List[Tuple[FunctionReplica, FunctionDeployment]],
+        now: Callable[[], float]
+) -> List[ScaleScheduleEvent]:
+    """
+    Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
+    """
+    scale_schedule_events = []
+    backup = {}
+    for event in scale_functions:
+        deployment = event[1]
+        fn = deployment.labels[function_label]
+        all_replicas = ctx.replica_service.find_function_replicas_with_labels(
+            {function_label: fn})
+        backup[fn] = len(all_replicas)
+
+    for event in scale_functions:
+        gateway = event[0]
+        deployment = event[1]
+        fn = deployment.labels[function_label]
+        gateway_node = ctx.node_service.find(gateway.node.name)
+        zone = gateway_node.labels[zone_label]
+        replicas = ctx.replica_service.find_function_replicas_with_labels(
+            {function_label: fn}, node_labels={zone_label: zone})
+        all_replicas = ctx.replica_service.find_function_replicas_with_labels(
+            {function_label: fn})
+        if len(replicas) == 0:
+            logger.info(
+                f"Wanted to remove container with function {fn} but there is no running container anymore in zone {zone}")
+            continue
+        if len(all_replicas) == 1:
+            logger.info(
+                f"Wanted to remove container with function {fn} but there is only one running container anymore in zone {zone}")
+            continue
+        if backup[fn] <= 1:
+            logger.info(f"Tear down policy wanted to scale down function too many times")
+            continue
+        remove = self.replica_with_lowest_resource_usage(replicas, ctx)
+        if remove is None:
+            continue
+
+        backup[fn] -= 1
+
+        ts = now()
+
+        event = ScaleScheduleEvent(
+            ts=ts,
+            fn=fn,
+            replica=remove,
+            origin_zone=zone,
+            target_zone=zone,
+            delete=True
+        )
+        scale_schedule_events.append(event)
+    return scale_schedule_events

@@ -16,6 +16,7 @@ from kubernetes.utils import parse_quantity
 from skippy.core.utils import parse_size_string
 
 from faasopts.utils.pressure.api import ScaleScheduleEvent, PressureAutoscalerParameters
+from faasopts.utils.pressure.calculation import get_under_pressure, PressureResult
 from faasopts.utils.pressure.service import PressureService
 
 logger = logging.getLogger(__name__)
@@ -122,33 +123,14 @@ class PressureGlobalScheduler(GlobalScheduler):
         """
         Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
         """
-        under_pressures = self.is_under_pressure(pressure_values)
-        logger.info(" under pressure_gateway %d", len(under_pressures))
-        under_pressure_new = []
-        new_pods = {}
-        for under_pressure in under_pressures:
-            deployment = under_pressure[1]
-            max_replica = self.parameters[deployment.name].max_replicas
-            running_pods = len(self.ctx.replica_service.get_function_replicas_of_deployment(deployment.name))
-            pending_pods = len(
-                self.ctx.replica_service.get_function_replicas_of_deployment(deployment.name, running=False,
-                                                                             state=pod_pending))
-            all_pods = running_pods + pending_pods
-            no_new_pods = new_pods.get(deployment.name, 0)
-            if ((all_pods + no_new_pods) - teardowns) < max_replica:
-                under_pressure_new.append(under_pressure)
-                if new_pods.get(deployment.name, None) is None:
-                    new_pods[deployment.name] = 1
-                else:
-                    new_pods[deployment.name] += 1
-
+        under_pressure_new = get_under_pressure(pressure_values, teardowns, self.ctx, self.parameters)
         scale_schedule_events = self.scheduling_policy(under_pressure_new, pressure_values)
 
         return scale_schedule_events
 
     def scheduling_policy(
             self,
-            scale_functions: List[Tuple[FunctionReplica, FunctionDeployment, FunctionReplica]],
+            scale_functions: List[PressureResult],
             pressure_per_zone: pd.DataFrame
     ) -> List[ScaleScheduleEvent]:
         """
@@ -156,8 +138,8 @@ class PressureGlobalScheduler(GlobalScheduler):
         """
         events = []
         for event in scale_functions:
-            pressure_target_gateway = event[0]
-            deployment = event[1]
+            pressure_target_gateway = event.target_gateway
+            deployment = event.deployment
             scheduler, new_target_zone = self.global_scheduling_policy(deployment, pressure_target_gateway,
                                                                        pressure_per_zone)
 
@@ -257,7 +239,7 @@ class PressureGlobalScheduler(GlobalScheduler):
                     if len(pressure_df.loc[deployment.name]) == 0 or len(
                             pressure_df.loc[deployment.name].loc[zone]) == 0:
                         continue
-                    if mean_pressure < self.parameters[deployment.name].min_threshold:
+                    if mean_pressure < self.parameters[zone].function_parameters[deployment.name].min_threshold:
                         pending_pods = ctx.replica_service.find_function_replicas_with_labels(
                             labels={
                                 function_label: deployment.fn_name,

@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from typing import Optional, Callable, Dict
+from typing import Optional, Callable, Dict, List
 
 import pandas as pd
 from faas.context import PlatformContext, FunctionReplicaFactory
@@ -8,7 +8,7 @@ from faas.system import FunctionReplica, Metrics
 from faas.util.constant import zone_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
-from faasopts.utils.pressure.api import PressureAutoscalerParameters
+from faasopts.utils.pressure.api import PressureAutoscalerParameters, ScaleScheduleEvent
 from faasopts.utils.pressure.calculation import PressureInput, PressureFunction
 from faasopts.utils.pressure.service import PressureService
 
@@ -40,6 +40,8 @@ class PressureAutoscaler(BaseAutoscaler):
             return None
         # Store calculated pressure values such that global scheduler can retrieve it
         return pressure_values
+
+    def find_local_scale_actions(self, pressure_values: pd.DataFrame) -> List[ScaleScheduleEvent]:
 
     def calculate_pressure_per_fn(self, ctx: PlatformContext) -> Optional[pd.DataFrame]:
         """
