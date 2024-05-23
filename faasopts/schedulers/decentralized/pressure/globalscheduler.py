@@ -15,15 +15,15 @@ from faas.util.constant import worker_role_label, zone_label, pod_type_label, ap
 from kubernetes.utils import parse_quantity
 from skippy.core.utils import parse_size_string
 
-from faasopts.utils.pressure.api import ScaleScheduleEvent, PressureAutoscalerParameters
-from faasopts.utils.pressure.calculation import get_under_pressure, PressureResult
+from faasopts.utils.pressure.api import PressureScaleScheduleEvent, PressureAutoscalerParameters
+from faasopts.utils.pressure.calculation import identify_above_max_pressure_deployments, PressureResult, \
+    prepare_pressure_scale_schedule_event
 from faasopts.utils.pressure.service import PressureService
 
 logger = logging.getLogger(__name__)
 
 
-
-def is_zero_sum_action(create_events: Dict[str, List[str]], x: ScaleScheduleEvent):
+def is_zero_sum_action(create_events: Dict[str, List[str]], x: PressureScaleScheduleEvent):
     # see if the events have the same destination zone
     to_create = create_events.get(x.target_zone, None)
     if to_create is not None:
@@ -36,11 +36,13 @@ def is_zero_sum_action(create_events: Dict[str, List[str]], x: ScaleScheduleEven
 
 
 class ScaleScheduleEventHandler(abc.ABC):
-    def handle(self, scale_event: List[ScaleScheduleEvent]):
+    def handle(self, scale_event: List[PressureScaleScheduleEvent]):
         raise NotImplementedError()
+
 
 def scale_schedule_handler_factory(handler_type: str):
     raise NotImplementedError()
+
 
 @dataclass
 class PressureGlobalSchedulerConfiguration(BaseGlobalSchedulerConfiguration):
@@ -53,6 +55,7 @@ class PressureGlobalSchedulerConfiguration(BaseGlobalSchedulerConfiguration):
         for zone, params in self.parameters.items():
             copied_parameters[zone] = params.copy()
         return PressureGlobalSchedulerConfiguration(copied_parameters, self.scale_schedule_event_handler_type)
+
 
 class PressureGlobalScheduler(GlobalScheduler):
     def __init__(self, config: PressureGlobalSchedulerConfiguration, storage_local_schedulers: Dict[str, str],
@@ -75,8 +78,8 @@ class PressureGlobalScheduler(GlobalScheduler):
     def __str__(self):
         return f"GlobalScheduler: {self.scheduler_name}"
 
-    def remove_zero_sum_actions(self, create_results: List[ScaleScheduleEvent],
-                                delete_results: List[ScaleScheduleEvent]):
+    def remove_zero_sum_actions(self, create_results: List[PressureScaleScheduleEvent],
+                                delete_results: List[PressureScaleScheduleEvent]):
         """
         Removes zero sum actions from create_results and delete_results
         :param create_results: tuples of replicas and target zones
@@ -100,7 +103,7 @@ class PressureGlobalScheduler(GlobalScheduler):
             scale_schedule_events = self.find_clusters_for_autoscaler_decisions(pressure_values)
             self.scale_schedule_event_handler.handle(scale_schedule_events)
 
-    def find_clusters_for_autoscaler_decisions(self, pressure_values: pd.DataFrame) -> List[ScaleScheduleEvent]:
+    def find_clusters_for_autoscaler_decisions(self, pressure_values: pd.DataFrame) -> List[PressureScaleScheduleEvent]:
 
         # Figure out down scaling actions and save them for global scheduler
         delete_results = self.get_scale_down_actions(pressure_values)
@@ -119,11 +122,12 @@ class PressureGlobalScheduler(GlobalScheduler):
         return all_results
 
     def get_scale_up_actions(self, pressure_values: pd.DataFrame, teardowns: int) -> List[
-        ScaleScheduleEvent]:
+        PressureScaleScheduleEvent]:
         """
         Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
         """
-        under_pressure_new = get_under_pressure(pressure_values, teardowns, self.ctx, self.parameters)
+        under_pressure_new = identify_above_max_pressure_deployments(pressure_values, teardowns, self.ctx,
+                                                                     self.parameters)
         scale_schedule_events = self.scheduling_policy(under_pressure_new, pressure_values)
 
         return scale_schedule_events
@@ -132,7 +136,7 @@ class PressureGlobalScheduler(GlobalScheduler):
             self,
             scale_functions: List[PressureResult],
             pressure_per_zone: pd.DataFrame
-    ) -> List[ScaleScheduleEvent]:
+    ) -> List[PressureScaleScheduleEvent]:
         """
         Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
         """
@@ -142,34 +146,16 @@ class PressureGlobalScheduler(GlobalScheduler):
             deployment = event.deployment
             scheduler, new_target_zone = self.global_scheduling_policy(deployment, pressure_target_gateway,
                                                                        pressure_per_zone)
-
-            event = self.prepare_pod_request(deployment, new_target_zone=new_target_zone,
-                                             pressure_target_zone=pressure_target_gateway.node.labels[zone_label])
+            local_scheduler_name = self.storage_local_schedulers[new_target_zone]
+            event = prepare_pressure_scale_schedule_event(deployment, new_target_zone=new_target_zone,
+                                                          pressure_target_zone=pressure_target_gateway.node.labels[
+                                                              zone_label],
+                                                          local_scheduler_name=local_scheduler_name,
+                                                          replica_factory=self.replica_factory, now=self.now)
             events.append(event)
         return events
 
-    def prepare_pod_request(self, deployment: FunctionDeployment, new_target_zone: str,
-                            pressure_target_zone: str) -> ScaleScheduleEvent:
-        local_scheduler_name = self.storage_local_schedulers[new_target_zone]
-        replica = self.replica_factory.create_replica(
-            {worker_role_label: 'true', 'origin_zone': pressure_target_zone,
-             zone_label: new_target_zone, 'schedulerName': local_scheduler_name},
-            deployment.deployment_ranking.get_first(), deployment)
-
-        time_time = self.now()
-
-        scale_schedule_event = ScaleScheduleEvent(
-            ts=time_time,
-            fn=deployment.name,
-            replica=replica,
-            origin_zone=pressure_target_zone,
-            target_zone=new_target_zone,
-            delete=False
-        )
-
-        return scale_schedule_event
-
-    def get_scale_down_actions(self, pressure_values: pd.DataFrame) -> List[ScaleScheduleEvent]:
+    def get_scale_down_actions(self, pressure_values: pd.DataFrame) -> List[PressureScaleScheduleEvent]:
         """
          Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
          """
@@ -265,7 +251,7 @@ class PressureGlobalScheduler(GlobalScheduler):
             self,
             ctx: PlatformContext,
             scale_functions: List[Tuple[FunctionReplica, FunctionDeployment]],
-    ) -> List[ScaleScheduleEvent]:
+    ) -> List[PressureScaleScheduleEvent]:
         """
         Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
         """
@@ -307,7 +293,7 @@ class PressureGlobalScheduler(GlobalScheduler):
 
             ts = time.time()
 
-            event = ScaleScheduleEvent(
+            event = PressureScaleScheduleEvent(
                 ts=ts,
                 fn=fn,
                 replica=remove,
@@ -398,7 +384,7 @@ class PressureGlobalScheduler(GlobalScheduler):
     def get_pressure_values(self, pressure_id: str) -> pd.DataFrame:
         return self.pressure_service.get_pressure_values(pressure_id)
 
-    def get_delete_results(self, delete_results_id: str) -> List[ScaleScheduleEvent]:
+    def get_delete_results(self, delete_results_id: str) -> List[PressureScaleScheduleEvent]:
         raise self.pressure_service.get_delete_results(delete_results_id)
 
     def global_scheduling_policy(self, deployment: FunctionDeployment, target_gateway: FunctionReplica,
@@ -465,5 +451,5 @@ class PressureGlobalScheduler(GlobalScheduler):
             # this error happens in case basically all resources are  used
             return '', ''
 
-    def handle_scale_schedule_events(self, scale_schedule_events: List[ScaleScheduleEvent]):
+    def handle_scale_schedule_events(self, scale_schedule_events: List[PressureScaleScheduleEvent]):
         self.scale_schedule_event_handler.handle(scale_schedule_events)

@@ -8,8 +8,10 @@ from faas.system import FunctionReplica, Metrics
 from faas.util.constant import zone_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
-from faasopts.utils.pressure.api import PressureAutoscalerParameters, ScaleScheduleEvent
-from faasopts.utils.pressure.calculation import PressureInput, PressureFunction
+from faasopts.utils.pressure.api import PressureAutoscalerParameters, PressureScaleScheduleEvent
+from faasopts.utils.pressure.calculation import PressureInput, PressureFunction, \
+    identify_above_max_pressure_deployments, \
+    is_below_min_threshold, prepare_pressure_scale_schedule_event
 from faasopts.utils.pressure.service import PressureService
 
 logger = logging.getLogger(__name__)
@@ -20,16 +22,17 @@ class PressureAutoscaler(BaseAutoscaler):
     def __init__(self, ctx: PlatformContext, parameters: PressureAutoscalerParameters,
                  gateway: FunctionReplica,
                  replica_factory: FunctionReplicaFactory, now: Callable[[], float], pressure_service: PressureService,
-                 pressure_functions: Dict[str, PressureFunction], metrics: Metrics):
+                 pressure_functions: Dict[str, PressureFunction], metrics: Metrics, local_scheduler_name: str):
         self.ctx = ctx
         self.parameters = parameters
         self.gateway = gateway
-        self.cluster = self.gateway.labels[zone_label]
+        self.zone = self.gateway.labels[zone_label]
         self.replica_factory = replica_factory
         self.now = now
         self.pressure_service = pressure_service
         self.pressure_functions = pressure_functions
         self.metrics = metrics
+        self.local_scheduler_name = local_scheduler_name
 
     def run(self) -> Optional[pd.DataFrame]:
         logger.info("start to figure scale up out")
@@ -41,7 +44,55 @@ class PressureAutoscaler(BaseAutoscaler):
         # Store calculated pressure values such that global scheduler can retrieve it
         return pressure_values
 
-    def find_local_scale_actions(self, pressure_values: pd.DataFrame) -> List[ScaleScheduleEvent]:
+    def find_local_scale_actions(self, pressure_values: pd.DataFrame) -> List[PressureScaleScheduleEvent]:
+        """
+        In contrast
+        :param pressure_values:
+        :return:
+        """
+        zone_parameters = {self.zone: self.parameters}
+
+        # contains
+        below_min_pressure = is_below_min_threshold(pressure_values, self.ctx, zone_parameters)
+
+        teardowns = defaultdict(int)
+        for result in below_min_pressure:
+            teardowns[result.deployment.name] += 1
+
+        above_max_pressures = identify_above_max_pressure_deployments(pressure_values, teardowns, self.ctx,
+                                                                      zone_parameters)
+
+        local_scale_ups_per_fn = defaultdict(list)
+        for result in above_max_pressures:
+            if result.target_gateway.replica_id == result.origin_gateway.replica_id and result.origin_gateway.node.cluster == self.zone:
+                # we only want to resolve pressure results that are above if the violation originates from the zone
+                # that the autoscaler observes
+                local_scale_ups_per_fn[result.deployment.name].append(result)
+
+        local_teardowns_per_fn = defaultdict(list)
+        for result in below_min_pressure:
+            if result.target_gateway.replica_id == result.origin_gateway.replica_id and result.origin_gateway.node.cluster == self.zone:
+                # we only want to resolve pressure results that are above if the violation originates from the zone
+                # that the autoscaler observes
+                local_teardowns_per_fn[result.deployment.name].append(result)
+
+        for fn, result in local_teardowns_per_fn.items():
+            scale_down_rate = 1
+            teardown_replica = self.select_teardown_replicas(fn, scale_down_rate)
+            self.scale_down(fn, scale_down_rate)
+
+        for fn, result in local_scale_ups_per_fn.items():
+            # scale_up_rate = self.parameters.function_parameters[fn].scale_up_rate
+            scale_up_rate = 1
+            replicas = []
+            for _ in range(scale_up_rate):
+                event = prepare_pressure_scale_schedule_event(result.deployment, self.zone, self.zone,
+                                                              self.local_scheduler_name, self.replica_factory, self.now)
+                if self.replica_fits(event.replica, self.zone):
+                    replicas.append(event.replica)
+                else:
+                    break
+            self.scale_up(result.deployment.name, replicas)
 
     def calculate_pressure_per_fn(self, ctx: PlatformContext) -> Optional[pd.DataFrame]:
         """
@@ -106,8 +157,8 @@ class PressureAutoscaler(BaseAutoscaler):
         """
         Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
         """
-        cluster = self.cluster
-        internally_spawned_traces = traces[traces['dest_zone'] == self.cluster]
+        cluster = self.zone
+        internally_spawned_traces = traces[traces['dest_zone'] == self.zone]
         internally_spawned_traces = internally_spawned_traces[internally_spawned_traces['origin_zone'] == cluster]
         clients = internally_spawned_traces['client'].unique()
 

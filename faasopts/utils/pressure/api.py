@@ -1,7 +1,7 @@
 import copy
 import logging
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import Dict
 
 from dataclasses_json import dataclass_json
 from faas.system import FunctionReplica
@@ -26,6 +26,7 @@ class PressureFunctionParameters:
     offset: float  # offset of midpoint (values > 0 increase the y-value of the midpoint)
     lookback: int
     percentile_duration: float = 90
+    scale_up_rate: int = 1
 
     def copy(self):
         return PressureFunctionParameters(
@@ -41,7 +42,8 @@ class PressureFunctionParameters:
             self.d,
             self.offset,
             self.lookback,
-            self.percentile_duration
+            self.percentile_duration,
+            self.scale_up_rate
         )
 
 @dataclass_json
@@ -61,7 +63,7 @@ class PressureAutoscalerParameters:
 
 @dataclass_json
 @dataclass
-class ScaleScheduleEvent:
+class PressureScaleScheduleEvent:
     ts: float
     fn: str
     replica: FunctionReplica

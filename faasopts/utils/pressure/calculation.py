@@ -1,5 +1,6 @@
 import abc
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Callable
 
@@ -7,9 +8,11 @@ import numpy as np
 import pandas as pd
 from faas.context import PlatformContext
 from faas.system import FunctionReplica, FunctionDeployment
-from faas.util.constant import pod_type_label, api_gateway_type_label, zone_label, function_label, pod_pending
+from faas.util.constant import pod_type_label, api_gateway_type_label, zone_label, function_label, pod_pending, \
+    worker_role_label
 
-from faasopts.utils.pressure.api import PressureAutoscalerParameters, PressureFunctionParameters, ScaleScheduleEvent
+from faasopts.utils.pressure.api import PressureAutoscalerParameters, PressureFunctionParameters, \
+    PressureScaleScheduleEvent
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +31,8 @@ class PressureResult:
     target_gateway: FunctionReplica
     origin_gateway: FunctionReplica
     deployment: FunctionDeployment
+    scale_down: bool
+
 
 def logistic_curve(x, a, b, c, d):
     """
@@ -383,28 +388,23 @@ def pressure_cpu_usage(parameters: PressureFunctionParameters, fn: str, gateway:
     return cpu_mean
 
 
-def get_scale_down_actions(pressure_values: pd.DataFrame, ctx: PlatformContext,
-                           parameters: Dict[str, PressureAutoscalerParameters]) -> List[ScaleScheduleEvent]:
-    """
-     Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
-     """
-    not_under_pressure = is_not_under_pressure(pressure_values, ctx, parameters)
-    logger.info("not under pressure_gateway %d", len(not_under_pressure))
-    result = teardown_policy(ctx, not_under_pressure)
-    return result
-
-
-def get_under_pressure(pressure_values: pd.DataFrame, teardowns: int, ctx: PlatformContext,
-                       parameters: Dict[str, PressureAutoscalerParameters]) -> List[
+def identify_above_max_pressure_deployments(pressure_values: pd.DataFrame, teardowns: Dict[str, int],
+                                            ctx: PlatformContext,
+                                            parameters: Dict[str, PressureAutoscalerParameters]) -> List[
     PressureResult]:
     """
     Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
+    This function checks for pressure violations (i.e., higher than max threshold). Then, it checks
+    which scale up actions (i.e., to mitigate the pressure violation) are feasible (i.e., keeping the number of replicas
+    lower than the maximum amount allowed).
+    This check also includes the replicas to teardown.
+    Returns a list of results that indicate where a new replica of a given function should be spawned
     """
-    under_pressures = is_under_pressure(pressure_values, ctx, parameters)
-    logger.info(" under pressure_gateway %d", len(under_pressures))
-    under_pressure_new = []
-    new_pods = {}
-    for under_pressure in under_pressures:
+    above_max_pressure = is_above_max_threshold(pressure_values, ctx, parameters)
+    logger.info(" under pressure_gateway %d", len(above_max_pressure))
+    above_max_pressure_filtered = []
+    new_pods = defaultdict(int)
+    for under_pressure in above_max_pressure:
         deployment = under_pressure.deployment
         max_replica = deployment.scaling_configuration.scale_max
         running_pods = len(ctx.replica_service.get_function_replicas_of_deployment(deployment.name))
@@ -413,18 +413,15 @@ def get_under_pressure(pressure_values: pd.DataFrame, teardowns: int, ctx: Platf
                                                                     state=pod_pending))
         all_pods = running_pods + pending_pods
         no_new_pods = new_pods.get(deployment.name, 0)
-        if ((all_pods + no_new_pods) - teardowns) < max_replica:
-            under_pressure_new.append(under_pressure)
-            if new_pods.get(deployment.name, None) is None:
-                new_pods[deployment.name] = 1
-            else:
-                new_pods[deployment.name] += 1
+        if ((all_pods + no_new_pods) - teardowns[deployment.name]) < max_replica:
+            above_max_pressure_filtered.append(under_pressure)
+            new_pods[deployment.name] += 1
 
-    return under_pressure_new
+    return above_max_pressure_filtered
 
 
-def is_under_pressure(pressure_per_gateway: pd.DataFrame, ctx: PlatformContext,
-                      parameters: Dict[str, PressureAutoscalerParameters]) -> List[
+def is_above_max_threshold(pressure_per_gateway: pd.DataFrame, ctx: PlatformContext,
+                           parameters: Dict[str, PressureAutoscalerParameters]) -> List[
     PressureResult]:
     """
    Checks for each gateway and deployment if its current pressure violates the threshold
@@ -455,27 +452,27 @@ def is_under_pressure(pressure_per_gateway: pd.DataFrame, ctx: PlatformContext,
                         target_gateway = ctx.replica_service.find_function_replicas_with_labels(
                             labels={pod_type_label: api_gateway_type_label},
                             node_labels={zone_label: client_zone})[0]
-                        under_pressure.append(PressureResult(target_gateway, gateway, deployment))
+                        under_pressure.append(PressureResult(target_gateway, gateway, deployment, False))
                 except KeyError:
                     pass
     return under_pressure
 
 
-def is_not_under_pressure(pressure_values: pd.DataFrame, ctx: PlatformContext,
-                          parameters: Dict[str, PressureAutoscalerParameters]) -> List[
-    Tuple[FunctionReplica, FunctionDeployment]]:
+def is_below_min_threshold(pressure_values: pd.DataFrame, ctx: PlatformContext,
+                           parameters: Dict[str, PressureAutoscalerParameters]) -> List[PressureResult]:
     """
     Checks for each gateway if its current pressure violates the threshold
     Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
-    :return: gateways that are under pressure
+    :return: gateways that are below pressure
     """
 
-    not_under_pressure = []
-    # reduce df to look at the mean pressure over all clients per  function and zone
+    below_min_threshold = []
     if len(pressure_values) == 0:
         logger.info("No pressure values")
         return []
 
+    # reduce df to look at the mean pressure over all clients per  function and zone
+    # we only scale down if the incoming pressure on average is below the threshold
     pressure_df = pressure_values.groupby(['fn', 'fn_zone']).mean()
     for gateway in ctx.replica_service.find_function_replicas_with_labels(
             {pod_type_label: api_gateway_type_label}):
@@ -502,12 +499,12 @@ def is_not_under_pressure(pressure_values: pd.DataFrame, ctx: PlatformContext,
                         logger.info(
                             f"Wanted to scale down FN {deployment.name} in zone {zone}, but had pending pods.")
                     else:
-                        not_under_pressure.append((gateway, deployment))
+                        below_min_threshold.append(PressureResult(gateway, gateway, deployment, True))
             except KeyError:
                 if deployment.labels.get(function_label, None) is not None:
                     logger.info(f'No pressure values found for {zone} - {deployment} - try to shut down')
-                    not_under_pressure.append((gateway, deployment))
-    return not_under_pressure
+                    below_min_threshold.append(PressureResult(gateway, gateway, deployment, True))
+    return below_min_threshold
 
 
 def teardown_policy(
@@ -515,7 +512,7 @@ def teardown_policy(
         ctx: PlatformContext,
         scale_functions: List[Tuple[FunctionReplica, FunctionDeployment]],
         now: Callable[[], float]
-) -> List[ScaleScheduleEvent]:
+) -> List[PressureScaleScheduleEvent]:
     """
     Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
     """
@@ -557,7 +554,7 @@ def teardown_policy(
 
         ts = now()
 
-        event = ScaleScheduleEvent(
+        event = PressureScaleScheduleEvent(
             ts=ts,
             fn=fn,
             replica=remove,
@@ -567,3 +564,25 @@ def teardown_policy(
         )
         scale_schedule_events.append(event)
     return scale_schedule_events
+
+
+def prepare_pressure_scale_schedule_event(deployment: FunctionDeployment, new_target_zone: str,
+                                          pressure_target_zone: str, local_scheduler_name: str, replica_factory,
+                                          now: Callable[[], float]) -> PressureScaleScheduleEvent:
+    replica = replica_factory.create_replica(
+        {worker_role_label: 'true', 'origin_zone': pressure_target_zone,
+         zone_label: new_target_zone, 'schedulerName': local_scheduler_name},
+        deployment.deployment_ranking.get_first(), deployment)
+
+    time_time = now()
+
+    scale_schedule_event = PressureScaleScheduleEvent(
+        ts=time_time,
+        fn=deployment.name,
+        replica=replica,
+        origin_zone=pressure_target_zone,
+        target_zone=new_target_zone,
+        delete=False
+    )
+
+    return scale_schedule_event
