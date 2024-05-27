@@ -1,7 +1,7 @@
 import copy
 import logging
 from dataclasses import dataclass
-from typing import Dict
+from typing import Dict, List
 
 from dataclasses_json import dataclass_json
 from faas.system import FunctionReplica
@@ -66,7 +66,7 @@ class PressureAutoscalerParameters:
 class PressureScaleScheduleEvent:
     ts: float
     fn: str
-    replica: FunctionReplica
+    replicas: List[FunctionReplica]
     origin_zone: str
     target_zone: str
     delete: bool = False

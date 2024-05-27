@@ -8,31 +8,17 @@ from typing import Dict, List, Tuple, Callable, Optional
 
 import pandas as pd
 from faas.context import PlatformContext, FunctionReplicaFactory
-from faas.system import Metrics, FunctionReplicaState, FunctionReplica, FunctionNode, FunctionDeployment
+from faas.system import Metrics, FunctionReplica, FunctionDeployment
 from faas.system.scheduling.decentralized import GlobalScheduler, BaseGlobalSchedulerConfiguration
-from faas.util.constant import worker_role_label, zone_label, pod_type_label, api_gateway_type_label, function_label, \
+from faas.util.constant import zone_label, pod_type_label, api_gateway_type_label, function_label, \
     pod_pending
-from kubernetes.utils import parse_quantity
-from skippy.core.utils import parse_size_string
 
+from faasopts.utils.infrastructure.filter import get_filtered_nodes_in_zone
 from faasopts.utils.pressure.api import PressureScaleScheduleEvent, PressureAutoscalerParameters
 from faasopts.utils.pressure.calculation import identify_above_max_pressure_deployments, PressureResult, \
-    prepare_pressure_scale_schedule_event
-from faasopts.utils.pressure.service import PressureService
+    remove_zero_sum_actions, prepare_pressure_scale_schedule_events
 
 logger = logging.getLogger(__name__)
-
-
-def is_zero_sum_action(create_events: Dict[str, List[str]], x: PressureScaleScheduleEvent):
-    # see if the events have the same destination zone
-    to_create = create_events.get(x.target_zone, None)
-    if to_create is not None:
-
-        # check if the function that is supposed to be deleted also in the list of containers to spawn
-        if x.fn in to_create:
-            return True
-
-    return False
 
 
 class ScaleScheduleEventHandler(abc.ABC):
@@ -40,27 +26,23 @@ class ScaleScheduleEventHandler(abc.ABC):
         raise NotImplementedError()
 
 
-def scale_schedule_handler_factory(handler_type: str):
-    raise NotImplementedError()
-
-
 @dataclass
 class PressureGlobalSchedulerConfiguration(BaseGlobalSchedulerConfiguration):
     # key: zone, value: parameters
     parameters: Dict[str, PressureAutoscalerParameters]
-    scale_schedule_event_handler_type: str
 
     def copy(self):
         copied_parameters = {}
         for zone, params in self.parameters.items():
             copied_parameters[zone] = params.copy()
-        return PressureGlobalSchedulerConfiguration(copied_parameters, self.scale_schedule_event_handler_type)
+        return PressureGlobalSchedulerConfiguration(self.scheduler_name, self.scheduler_type, self.delay,
+                                                    copied_parameters)
 
 
 class PressureGlobalScheduler(GlobalScheduler):
     def __init__(self, config: PressureGlobalSchedulerConfiguration, storage_local_schedulers: Dict[str, str],
                  ctx: PlatformContext,
-                 metrics: Metrics, pressure_service: PressureService, now: Callable[[], float],
+                 metrics: Metrics, now: Callable[[], float],
                  replica_factory: FunctionReplicaFactory,
                  ):
         super().__init__(config)
@@ -72,46 +54,21 @@ class PressureGlobalScheduler(GlobalScheduler):
         self.parameters = config.parameters
         self.now = now
         self.replica_factory = replica_factory
-        self.scale_schedule_event_handler = config.scale_schedule_event_handler
-        self.pressure_service = pressure_service
 
     def __str__(self):
         return f"GlobalScheduler: {self.scheduler_name}"
 
-    def remove_zero_sum_actions(self, create_results: List[PressureScaleScheduleEvent],
-                                delete_results: List[PressureScaleScheduleEvent]):
-        """
-        Removes zero sum actions from create_results and delete_results
-        :param create_results: tuples of replicas and target zones
-        :param delete_results: delete actions to consider
-        :return:
-        """
-        create_events = defaultdict(list)
-        for result in create_results:
-            create_events[result.target_zone].append(result.fn)
-
-        # get all delete actions that are not reversing the creation event
-        filtered_delete = list(
-            filter(lambda x: not is_zero_sum_action(create_events, x), delete_results))
-        logger.info(f"zero sum actions were identified: {len(filtered_delete) != delete_results}")
-        return filtered_delete
-
-    def run(self):
-        while self.running:
-            # wait for all autoscalers to finish
-            pressure_values: pd.DataFrame = self.pressure_service.wait_for_all_pressures()
-            scale_schedule_events = self.find_clusters_for_autoscaler_decisions(pressure_values)
-            self.scale_schedule_event_handler.handle(scale_schedule_events)
-
     def find_clusters_for_autoscaler_decisions(self, pressure_values: pd.DataFrame) -> List[PressureScaleScheduleEvent]:
-
-        # Figure out down scaling actions and save them for global scheduler
         delete_results = self.get_scale_down_actions(pressure_values)
+
+        teardowns = defaultdict(int)
+        for result in delete_results:
+            teardowns[result.fn] += 1
 
         # Figure out up scaling actions, previous generated ids for intermediate results are passed in each replica as
         # labels
-        create_results = self.get_scale_up_actions(pressure_values, len(delete_results))
-        delete_results = self.remove_zero_sum_actions(create_results, delete_results)
+        create_results = self.get_scale_up_actions(pressure_values, teardowns)
+        delete_results = remove_zero_sum_actions(create_results, delete_results)
 
         logger.info(f"figured out scaling, {len(create_results)} up scale events")
         logger.info("figure our scale down")
@@ -121,7 +78,7 @@ class PressureGlobalScheduler(GlobalScheduler):
         all_results.extend(create_results)
         return all_results
 
-    def get_scale_up_actions(self, pressure_values: pd.DataFrame, teardowns: int) -> List[
+    def get_scale_up_actions(self, pressure_values: pd.DataFrame, teardowns: Dict[str, int]) -> List[
         PressureScaleScheduleEvent]:
         """
         Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
@@ -144,14 +101,17 @@ class PressureGlobalScheduler(GlobalScheduler):
         for event in scale_functions:
             pressure_target_gateway = event.target_gateway
             deployment = event.deployment
+            scale_up_rate = 1
+
             scheduler, new_target_zone = self.global_scheduling_policy(deployment, pressure_target_gateway,
                                                                        pressure_per_zone)
             local_scheduler_name = self.storage_local_schedulers[new_target_zone]
-            event = prepare_pressure_scale_schedule_event(deployment, new_target_zone=new_target_zone,
-                                                          pressure_target_zone=pressure_target_gateway.node.labels[
-                                                              zone_label],
-                                                          local_scheduler_name=local_scheduler_name,
-                                                          replica_factory=self.replica_factory, now=self.now)
+            event = prepare_pressure_scale_schedule_events(deployment, new_target_zone=new_target_zone,
+                                                           pressure_target_zone=pressure_target_gateway.node.labels[
+                                                               zone_label],
+                                                           local_scheduler_name=local_scheduler_name,
+                                                           replica_factory=self.replica_factory, now=self.now,
+                                                           no_of_replicas=scale_up_rate)
             events.append(event)
         return events
 
@@ -163,41 +123,6 @@ class PressureGlobalScheduler(GlobalScheduler):
         logger.info("not under pressure_gateway %d", len(not_under_pressure))
         result = self.teardown_policy(self.ctx, not_under_pressure)
         return result
-
-    def is_under_pressure(self, pressure_per_gateway: pd.DataFrame) -> List[
-        Tuple[FunctionReplica, FunctionDeployment, FunctionReplica]]:
-        """
-       Checks for each gateway and deployment if its current pressure violates the threshold
-       :return: gateway and deployment tuples that are under pressure
-       """
-        under_pressure = []
-        if len(pressure_per_gateway) == 0:
-            logger.info("No pressure values")
-            return []
-        # reduce df to look at the mean pressure over all clients per  function and zone
-        for gateway in self.ctx.replica_service.find_function_replicas_with_labels(
-                {pod_type_label: api_gateway_type_label}):
-            gateway_node = gateway.node
-            zone = gateway_node.labels[zone_label]
-            for deployment in self.ctx.deployment_service.get_deployments():
-                for client_zone in self.ctx.zone_service.get_zones():
-                    # client zone = x
-                    # check if pressure from x on a is too high, if yes -> try to schedule instance in x!
-                    try:
-                        mean_pressure = pressure_per_gateway.loc[deployment.name]
-                        if len(mean_pressure) == 0 or len(mean_pressure.loc[client_zone]) == 0:
-                            continue
-                        mean_pressure = mean_pressure.loc[zone].loc[client_zone][
-                            'pressure']
-                        if mean_pressure > self.parameters[deployment.name].max_threshold:
-                            # at this point we know where the origin for the high pressure comes from
-                            target_gateway = self.ctx.replica_service.find_function_replicas_with_labels(
-                                labels={pod_type_label: api_gateway_type_label},
-                                node_labels={zone_label: client_zone})[0]
-                            under_pressure.append((target_gateway, deployment, gateway))
-                    except KeyError:
-                        pass
-        return under_pressure
 
     def is_not_under_pressure(
             self, pressure_values: pd.DataFrame, ctx: PlatformContext
@@ -296,8 +221,9 @@ class PressureGlobalScheduler(GlobalScheduler):
             event = PressureScaleScheduleEvent(
                 ts=ts,
                 fn=fn,
-                replica=remove,
+                replicas=[remove],
                 origin_zone=zone,
+                target_zone=zone,
                 delete=True
             )
             scale_schedule_events.append(event)
@@ -306,8 +232,8 @@ class PressureGlobalScheduler(GlobalScheduler):
     def replica_with_lowest_resource_usage(self, replicas: List[FunctionReplica], ctx: PlatformContext) -> Optional[
         FunctionReplica]:
         cpus = []
-        lookback = self.parameters[replicas[0].function.name].lookback
         for replica in replicas:
+            lookback = self.parameters[replica.labels[zone_label]].function_parameters[replica.function.name].lookback
             start = datetime.datetime.now() - datetime.timedelta(seconds=lookback)
             end = datetime.datetime.now()
             try:
@@ -320,73 +246,6 @@ class PressureGlobalScheduler(GlobalScheduler):
         cpus.sort(key=lambda x: x[1])
         return None if len(cpus) == 0 else cpus[0][0]
 
-    def nodes_available_in_cluster(self, min_cores_required: int, min_memory_required: int, cluster: str) -> List[str]:
-        ready_nodes = []
-        start_ts = time.time()
-        nodes: List[FunctionNode] = self.ctx.node_service.get_nodes()
-        for n in nodes:
-            node_cluster_label = n.cluster
-            if node_cluster_label != cluster or n.labels.get(worker_role_label) is None:
-                continue
-            node_name = n.name
-            cpu_reserved = 0
-            memory_reserved = 0
-            for replica in self.ctx.replica_service.get_function_replicas_on_node(node_name, None):
-                if replica.state == FunctionReplicaState.DELETE or replica.state == FunctionReplicaState.SHUTDOWN:
-                    continue
-                cpu = replica.container.get_resource_requirements()['cpu']
-                if type(cpu) is str:
-                    cpu = parse_quantity(cpu)
-                else:
-                    cpu /= 1000
-                cpu_reserved += cpu
-                memory = replica.container.get_resource_requirements()['memory']
-                if type(memory) is str:
-                    memory = parse_size_string(memory)
-                memory_reserved += memory
-
-            node = self.ctx.node_service.find(node_name)
-            node_cores = node.cpus
-            node_memory = node.allocatable['memory']
-            if type(node_memory) is str:
-                node_memory = parse_size_string(node_memory)
-
-            enough_memory = (memory_reserved + min_memory_required) < node_memory
-            enough_cores = cpu_reserved + min_cores_required < node_cores
-            has_enough_resources = enough_cores and enough_memory
-            if has_enough_resources:
-                ready_nodes.append(node_name)
-        logger.info(ready_nodes)
-        end_ts = time.time()
-        self.metrics.log('nodes-available', end_ts - start_ts)
-        return ready_nodes
-
-    def get_filtered_nodes_in_cluster(self, replica: FunctionReplica, cluster: str):
-        resources_requests = replica.container.get_resource_requirements()
-        cpu_request = resources_requests.get('cpu')
-        if cpu_request and type(cpu_request) is cpu_request:
-            required_cores = parse_quantity(cpu_request)
-        elif not cpu_request:
-            required_cores = 0
-        else:
-            required_cores = cpu_request
-        required_cores /= 1000
-        memory_request = resources_requests.get('memory')
-        if memory_request and type(memory_request) is str:
-            required_memory = parse_size_string(memory_request)
-        elif not memory_request:
-            required_memory = 0
-        else:
-            required_memory = memory_request
-        nodes_available = self.nodes_available_in_cluster(required_cores, required_memory, cluster)
-        return nodes_available
-
-    def get_pressure_values(self, pressure_id: str) -> pd.DataFrame:
-        return self.pressure_service.get_pressure_values(pressure_id)
-
-    def get_delete_results(self, delete_results_id: str) -> List[PressureScaleScheduleEvent]:
-        raise self.pressure_service.get_delete_results(delete_results_id)
-
     def global_scheduling_policy(self, deployment: FunctionDeployment, target_gateway: FunctionReplica,
                                  pressure_per_zone: pd.DataFrame) -> Tuple[str, str]:
 
@@ -398,7 +257,7 @@ class PressureGlobalScheduler(GlobalScheduler):
         target_zone = target_gateway_node.labels[zone_label]
 
         # in case the initial target zone has enough resources, we can schedule it there
-        nodes_in_cluster_available = self.get_filtered_nodes_in_cluster(replica, target_zone)
+        nodes_in_cluster_available = get_filtered_nodes_in_zone(self.ctx, replica, target_zone)
         if len(nodes_in_cluster_available) > 0:
             found_scheduler = self.storage_local_schedulers[target_zone]
             logger.info("found scheduler: {} for replica {}".format(found_scheduler, replica.replica_id))
@@ -433,9 +292,9 @@ class PressureGlobalScheduler(GlobalScheduler):
                 p_c_x_f = t[1]
                 target_zone = t[2]
                 # check if pressure is already violated
-                if p_c_x_f < self.parameters[deployment.name].max_threshold:
+                if p_c_x_f < self.parameters[target_zone].function_parameters[deployment.name].max_threshold:
                     # check if new target has enough resources
-                    if len(self.get_filtered_nodes_in_cluster(replica, target_zone)) > 0:
+                    if len(get_filtered_nodes_in_zone(self.ctx, replica, target_zone)) > 0:
                         found_scheduler = self.storage_local_schedulers[target_zone]
                         logger.info("found scheduler: {} for replica {}".format(found_scheduler, replica.replica_id))
                         return found_scheduler, target_zone
@@ -443,13 +302,10 @@ class PressureGlobalScheduler(GlobalScheduler):
             # in case no zone fulfills above requirements, look for nearest that can host
             for t in a:
                 target_zone = t[2]
-                if len(self.get_filtered_nodes_in_cluster(replica, target_zone)):
+                if len(get_filtered_nodes_in_zone(self.ctx, replica, target_zone)):
                     found_scheduler = self.storage_local_schedulers[target_zone]
                     logger.info("found scheduler: {} for replica {}".format(found_scheduler, replica.replica_id))
                     return found_scheduler, target_zone
 
             # this error happens in case basically all resources are  used
             return '', ''
-
-    def handle_scale_schedule_events(self, scale_schedule_events: List[PressureScaleScheduleEvent]):
-        self.scale_schedule_event_handler.handle(scale_schedule_events)

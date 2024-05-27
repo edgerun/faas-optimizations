@@ -5,13 +5,14 @@ from typing import Optional, Callable, Dict, List
 import pandas as pd
 from faas.context import PlatformContext, FunctionReplicaFactory
 from faas.system import FunctionReplica, Metrics
-from faas.util.constant import zone_label
+from faas.util.constant import zone_label, function_label
 
 from faasopts.autoscalers.api import BaseAutoscaler
+from faasopts.utils.infrastructure.filter import get_filtered_nodes_in_zone
 from faasopts.utils.pressure.api import PressureAutoscalerParameters, PressureScaleScheduleEvent
 from faasopts.utils.pressure.calculation import PressureInput, PressureFunction, \
     identify_above_max_pressure_deployments, \
-    is_below_min_threshold, prepare_pressure_scale_schedule_event
+    is_below_min_threshold, prepare_pressure_scale_schedule_events
 from faasopts.utils.pressure.service import PressureService
 
 logger = logging.getLogger(__name__)
@@ -75,24 +76,34 @@ class PressureAutoscaler(BaseAutoscaler):
                 # we only want to resolve pressure results that are above if the violation originates from the zone
                 # that the autoscaler observes
                 local_teardowns_per_fn[result.deployment.name].append(result)
+        actions = []
+        for fn, results in local_teardowns_per_fn.items():
+            for result in results:
+                scale_down_rate = 1
+                teardown_replicas = self.select_teardown_replicas(fn, scale_down_rate)
+                actions.append(PressureScaleScheduleEvent(self.now(), fn, teardown_replicas, result,
+                                                          result.target_gateway.labels[zone_label],
+                                                          result.origin_gateway.labels[zone_label]))
 
-        for fn, result in local_teardowns_per_fn.items():
-            scale_down_rate = 1
-            teardown_replica = self.select_teardown_replicas(fn, scale_down_rate)
-            self.scale_down(fn, scale_down_rate)
-
-        for fn, result in local_scale_ups_per_fn.items():
+        for fn, results in local_scale_ups_per_fn.items():
             # scale_up_rate = self.parameters.function_parameters[fn].scale_up_rate
-            scale_up_rate = 1
-            replicas = []
-            for _ in range(scale_up_rate):
-                event = prepare_pressure_scale_schedule_event(result.deployment, self.zone, self.zone,
-                                                              self.local_scheduler_name, self.replica_factory, self.now)
-                if self.replica_fits(event.replica, self.zone):
-                    replicas.append(event.replica)
+            for result in results:
+                scale_up_rate = 1
+                event = prepare_pressure_scale_schedule_events(result.deployment, self.zone, self.zone,
+                                                               self.local_scheduler_name, self.replica_factory,
+                                                               self.now, scale_up_rate)
+                ctr = 0
+                for replica in event.replicas:
+                    if self.replica_fits(replica, self.zone):
+                        ctr += 1
+
+                if ctr == 0:
+                    logger.info("No space for replicas, let global scheduler handle this case")
                 else:
-                    break
-            self.scale_up(result.deployment.name, replicas)
+                    replicas_to_scale = event.replicas[:ctr]
+                    event.replicas = replicas_to_scale
+                actions.append(event)
+        return actions, pressure_values
 
     def calculate_pressure_per_fn(self, ctx: PlatformContext) -> Optional[pd.DataFrame]:
         """
@@ -257,7 +268,7 @@ class PressureAutoscaler(BaseAutoscaler):
 
         now = self.now()
         pressure_input = PressureInput(
-            parameters=self.parameters.function_parameters[function],
+            parameters=self.parameters,
             client=client,
             client_replica_id=client_replica_id,
             gateway=self.gateway,
@@ -272,3 +283,12 @@ class PressureAutoscaler(BaseAutoscaler):
             val *= (pressure.calculate_pressure(pressure_input) * weight)
 
         return val
+
+    def select_teardown_replicas(self, fn: str, no_to_teardown: int):
+        replicas = self.ctx.replica_service.find_function_replicas_with_labels(
+            {function_label: fn}, node_labels={zone_label: self.zone})
+        return replicas[:no_to_teardown]
+
+    def replica_fits(self, replica: FunctionReplica, zone: str):
+        available_nodes = get_filtered_nodes_in_zone(self.ctx, replica, zone)
+        return len(available_nodes) > 0

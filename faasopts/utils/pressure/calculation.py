@@ -557,7 +557,7 @@ def teardown_policy(
         event = PressureScaleScheduleEvent(
             ts=ts,
             fn=fn,
-            replica=remove,
+            replicas=[remove],
             origin_zone=zone,
             target_zone=zone,
             delete=True
@@ -566,23 +566,57 @@ def teardown_policy(
     return scale_schedule_events
 
 
-def prepare_pressure_scale_schedule_event(deployment: FunctionDeployment, new_target_zone: str,
+def prepare_pressure_scale_schedule_events(deployment: FunctionDeployment, new_target_zone: str,
                                           pressure_target_zone: str, local_scheduler_name: str, replica_factory,
-                                          now: Callable[[], float]) -> PressureScaleScheduleEvent:
-    replica = replica_factory.create_replica(
-        {worker_role_label: 'true', 'origin_zone': pressure_target_zone,
-         zone_label: new_target_zone, 'schedulerName': local_scheduler_name},
-        deployment.deployment_ranking.get_first(), deployment)
+                                           now: Callable[[], float], no_of_replicas) -> PressureScaleScheduleEvent:
+    replicas = []
+    for _ in range(no_of_replicas):
+        replica = replica_factory.create_replica(
+            {worker_role_label: 'true', 'origin_zone': pressure_target_zone,
+             zone_label: new_target_zone, 'schedulerName': local_scheduler_name},
+            deployment.deployment_ranking.get_first(), deployment)
+        replicas.append(replica)
 
     time_time = now()
 
     scale_schedule_event = PressureScaleScheduleEvent(
         ts=time_time,
         fn=deployment.name,
-        replica=replica,
+        replicas=replicas,
         origin_zone=pressure_target_zone,
         target_zone=new_target_zone,
         delete=False
     )
 
     return scale_schedule_event
+
+
+def is_zero_sum_action(create_events: Dict[str, List[str]], x: PressureScaleScheduleEvent):
+    # see if the events have the same destination zone
+    to_create = create_events.get(x.target_zone, None)
+    if to_create is not None:
+
+        # check if the function that is supposed to be deleted also in the list of containers to spawn
+        if x.fn in to_create:
+            return True
+
+    return False
+
+
+def remove_zero_sum_actions(create_results: List[PressureScaleScheduleEvent],
+                            delete_results: List[PressureScaleScheduleEvent]):
+    """
+    Removes zero sum actions from create_results and delete_results
+    :param create_results: tuples of replicas and target zones
+    :param delete_results: delete actions to consider
+    :return:
+    """
+    create_events = defaultdict(list)
+    for result in create_results:
+        create_events[result.target_zone].append(result.fn)
+
+    # get all delete actions that are not reversing the creation event
+    filtered_delete = list(
+        filter(lambda x: not is_zero_sum_action(create_events, x), delete_results))
+    logger.info(f"zero sum actions were identified: {len(filtered_delete) != delete_results}")
+    return filtered_delete
