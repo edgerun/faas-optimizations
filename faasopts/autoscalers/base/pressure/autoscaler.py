@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from typing import Optional, Callable, Dict, List
+from typing import Optional, Callable, List
 
 import pandas as pd
 from faas.context import PlatformContext, FunctionReplicaFactory
@@ -10,10 +10,8 @@ from faas.util.constant import zone_label, function_label
 from faasopts.autoscalers.api import BaseAutoscaler
 from faasopts.utils.infrastructure.filter import get_filtered_nodes_in_zone
 from faasopts.utils.pressure.api import PressureAutoscalerParameters, PressureScaleScheduleEvent
-from faasopts.utils.pressure.calculation import PressureInput, PressureFunction, \
-    identify_above_max_pressure_deployments, \
-    is_below_min_threshold, prepare_pressure_scale_schedule_events
-from faasopts.utils.pressure.service import PressureService
+from faasopts.utils.pressure.calculation import PressureInput, identify_above_max_pressure_deployments, \
+    is_below_min_threshold, prepare_pressure_scale_schedule_events, create_pressure_functions
 
 logger = logging.getLogger(__name__)
 
@@ -21,19 +19,17 @@ logger = logging.getLogger(__name__)
 class PressureAutoscaler(BaseAutoscaler):
 
     def __init__(self, ctx: PlatformContext, parameters: PressureAutoscalerParameters,
-                 gateway: FunctionReplica,
-                 replica_factory: FunctionReplicaFactory, now: Callable[[], float], pressure_service: PressureService,
-                 pressure_functions: Dict[str, PressureFunction], metrics: Metrics, local_scheduler_name: str):
+                 zone: str,
+                 replica_factory: FunctionReplicaFactory, now: Callable[[], float],
+                 metrics: Metrics):
         self.ctx = ctx
         self.parameters = parameters
-        self.gateway = gateway
-        self.zone = self.gateway.labels[zone_label]
+        self.zone = zone
         self.replica_factory = replica_factory
         self.now = now
-        self.pressure_service = pressure_service
-        self.pressure_functions = pressure_functions
+        self.pressure_functions = create_pressure_functions(parameters)
         self.metrics = metrics
-        self.local_scheduler_name = local_scheduler_name
+        self.local_scheduler_name = parameters.local_scheduler_name
 
     def run(self) -> Optional[pd.DataFrame]:
         logger.info("start to figure scale up out")
@@ -110,8 +106,10 @@ class PressureAutoscaler(BaseAutoscaler):
         Results contains for each deployed function in the region the pressure value (grouped by client zones)
         Dataframe contains: 'fn', 'fn_zone', 'client_zone', 'pressure'
         """
+        gateway = \
+            ctx.replica_service.find_function_replicas_with_labels(labels={pod_type_label: api_gateway_type_label},
+                                                                   node_labels={zone_label: cluster_name})[0]
         for function, fn_parameters in self.parameters.function_parameters.items():
-            gateway = self.gateway
             now = self.now()
             past = now - fn_parameters.lookback
             traces = ctx.trace_service.get_traces_api_gateway(gateway.node.name, past, now, response_status=200)
@@ -188,8 +186,9 @@ class PressureAutoscaler(BaseAutoscaler):
 
     def calculate_pressures_external_clients(self, traces: pd.DataFrame) -> Optional[pd.DataFrame]:
         ctx = self.ctx
-        gateway = self.gateway
-
+        gateway = \
+            ctx.replica_service.find_function_replicas_with_labels(labels={pod_type_label: api_gateway_type_label},
+                                                                   node_labels={zone_label: cluster_name})[0]
         pressure_values = []
         gateway_node = gateway.node
         gateway_zone = gateway_node.labels[zone_label]
@@ -222,7 +221,10 @@ class PressureAutoscaler(BaseAutoscaler):
         """
         ctx = self.ctx
         data = defaultdict(list)
-        gateway_node = self.gateway.node
+        gateway = \
+            ctx.replica_service.find_function_replicas_with_labels(labels={pod_type_label: api_gateway_type_label},
+                                                                   node_labels={zone_label: cluster_name})[0]
+        gateway_node = gateway.node
         zone = gateway_node.labels[zone_label]
         deployments = ctx.deployment_service.get_deployments()
 
@@ -278,7 +280,7 @@ class PressureAutoscaler(BaseAutoscaler):
             ctx=ctx
         )
         val = 1
-        for name, pressure in self.pressure_functions.items():
+        for name, pressure in self.pressure_functions[function].items():
             weight = self.parameters.function_parameters[function].pressure_weights[name]
             val *= (pressure.calculate_pressure(pressure_input) * weight)
 

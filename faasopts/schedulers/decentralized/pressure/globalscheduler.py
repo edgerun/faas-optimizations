@@ -44,6 +44,7 @@ class PressureGlobalScheduler(GlobalScheduler):
                  ctx: PlatformContext,
                  metrics: Metrics, now: Callable[[], float],
                  replica_factory: FunctionReplicaFactory,
+                 default_global_scheduler: GlobalScheduler
                  ):
         super().__init__(config)
         self.running = True
@@ -54,9 +55,13 @@ class PressureGlobalScheduler(GlobalScheduler):
         self.parameters = config.parameters
         self.now = now
         self.replica_factory = replica_factory
+        self.default_global_scheduler = default_global_scheduler
 
     def __str__(self):
         return f"GlobalScheduler: {self.scheduler_name}"
+
+    def find_cluster(self, replica: FunctionReplica) -> Tuple[str, str]:
+        return self.default_global_scheduler.find_cluster(replica)
 
     def find_clusters_for_autoscaler_decisions(self, pressure_values: pd.DataFrame) -> List[PressureScaleScheduleEvent]:
         delete_results = self.get_scale_down_actions(pressure_values)

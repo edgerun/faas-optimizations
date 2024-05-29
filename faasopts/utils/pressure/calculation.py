@@ -62,7 +62,8 @@ class PressureFunction(abc.ABC):
     def calculate_pressure(self, pressure_input: PressureInput) -> float:
         raise NotImplementedError()
 
-    def name(self) -> str:
+    @staticmethod
+    def name() -> str:
         raise NotImplementedError()
 
 
@@ -86,9 +87,10 @@ class PressureRTTLogFunction(PressureFunction):
         fn = pressure_input.function
         now = pressure_input.now
         ctx = pressure_input.ctx
-        return pressure_rtt_log(parameters[fn], client, client_replica_id, gateway, fn, now, ctx)
+        return pressure_rtt_log(parameters.function_parameters[fn], client, client_replica_id, gateway, fn, now, ctx)
 
-    def name(self) -> str:
+    @staticmethod
+    def name() -> str:
         return 'rtt_log'
 
 
@@ -100,11 +102,12 @@ class PressureRequestFunction(PressureFunction):
         traces = pressure_input.traces
         return pressure_by_num_requests_for_gateway(client, fn, traces)
 
-    def name(self) -> str:
+    @staticmethod
+    def name() -> str:
         return 'request'
 
 
-class PressureNetworkDistanceFunction(PressureFunction):
+class PressureNormalizedNetworkLatencyFunction(PressureFunction):
 
     def calculate_pressure(self, pressure_input: PressureInput) -> float:
         client_replica_id = pressure_input.client_replica_id
@@ -113,26 +116,12 @@ class PressureNetworkDistanceFunction(PressureFunction):
         max_latency = ctx.network_service.get_max_latency()
         return pressure_by_network_distance(client_replica_id, max_latency, ctx, gateway)
 
-    def name(self) -> str:
-        return 'network_distance'
+    @staticmethod
+    def name() -> str:
+        return 'normalized_network_latency'
 
 
-class PressureLatencyFulfillmentFunction(PressureFunction):
-
-    def calculate_pressure(self, pressure_input: PressureInput) -> float:
-        parameters = pressure_input.parameters
-        client_replica_id = pressure_input.client_replica_id
-        gateway = pressure_input.gateway
-        fn = pressure_input.function
-        ctx = pressure_input.ctx
-        required_latency = parameters.function_requirements[fn]
-        return pressure_latency_fulfillment(client_replica_id, required_latency, ctx, gateway)
-
-    def name(self) -> str:
-        return 'latency_fulfillment'
-
-
-class PressureLatencyReqLogFunction(PressureFunction):
+class PressureNetworkLatencyFulfillmentFunction(PressureFunction):
 
     def calculate_pressure(self, pressure_input: PressureInput) -> float:
         parameters = pressure_input.parameters
@@ -140,11 +129,28 @@ class PressureLatencyReqLogFunction(PressureFunction):
         gateway = pressure_input.gateway
         fn = pressure_input.function
         ctx = pressure_input.ctx
-        required_latency = parameters[fn].function_requirements[fn]
-        return pressure_latency_req_log(parameters[fn], client_replica_id, required_latency, gateway, ctx)
+        required_latency = parameters.function_parameters[fn].function_requirement
+        return pressure_network_latency_fulfillment(client_replica_id, required_latency, ctx, gateway)
 
-    def name(self) -> str:
-        return 'latency_req_log'
+    @staticmethod
+    def name() -> str:
+        return 'network_latency_fulfillment'
+
+
+class PressureNetworkLatencyRequirementLogFunction(PressureFunction):
+
+    def calculate_pressure(self, pressure_input: PressureInput) -> float:
+        parameters = pressure_input.parameters
+        client_replica_id = pressure_input.client_replica_id
+        gateway = pressure_input.gateway
+        fn = pressure_input.function
+        ctx = pressure_input.ctx
+        return pressure_network_latency_fulfillment_log(parameters.function_parameters[fn], client_replica_id, gateway,
+                                                        ctx)
+
+    @staticmethod
+    def name() -> str:
+        return 'network_latency_requirement_log'
 
 
 class PressureCpuUsageFunction(PressureFunction):
@@ -157,7 +163,8 @@ class PressureCpuUsageFunction(PressureFunction):
         ctx = pressure_input.ctx
         return pressure_cpu_usage(parameters.function_parameters[fn], fn, gateway, now, ctx)
 
-    def name(self) -> str:
+    @staticmethod
+    def name() -> str:
         return 'cpu_usage'
 
 
@@ -279,18 +286,8 @@ def pressure_by_network_distance(client_replica_id: str, max_latency: float, ctx
     return value
 
 
-def calculate_average_internal_distance(gateway: FunctionReplica, ctx: PlatformContext) -> float:
-    gateway_node = ctx.node_service.find(gateway.node.name)
-    zone = gateway_node.labels[zone_label]
-    nodes = ctx.node_service.find_nodes_in_zone(zone)
-    distances = list(
-        map(lambda c: ctx.network_service.get_latency(gateway.node.name, c.name), nodes)
-    )
-    return np.mean(distances)
-
-
-def pressure_latency_fulfillment(client_replica_id: str, required_latency: float, ctx: PlatformContext,
-                                 gateway: FunctionReplica) -> float:
+def pressure_network_latency_fulfillment(client_replica_id: str, required_latency: float, ctx: PlatformContext,
+                                         gateway: FunctionReplica) -> float:
     """
     Calculates the pressure based on the fulfillment of the latency requirement.
     I.e., applications have different requirements and therefore the pressure must reflect this circumstance
@@ -298,7 +295,6 @@ def pressure_latency_fulfillment(client_replica_id: str, required_latency: float
     :param required_latency: the required latency of the function
     :param ctx:
     :param gateway:
-    :param result:
     :return: Between 0 and 1 scaled pressure, the higher the value the higher the requirement violation
     """
     client_node = ctx.replica_service.get_function_replica_by_id(client_replica_id).node
@@ -323,8 +319,8 @@ def pressure_latency_fulfillment(client_replica_id: str, required_latency: float
     return p_lat_a_x_f
 
 
-def pressure_latency_req_log(parameters: PressureFunctionParameters, client_replica_id: str, latency_requirement: float,
-                             gateway: FunctionReplica, ctx: PlatformContext):
+def pressure_network_latency_fulfillment_log(parameters: PressureFunctionParameters, client_replica_id: str,
+                                             gateway: FunctionReplica, ctx: PlatformContext):
     a = parameters.a
     b = parameters.b
     c = parameters.c
@@ -335,7 +331,6 @@ def pressure_latency_req_log(parameters: PressureFunctionParameters, client_repl
         ctx.replica_service.find_function_replicas_with_labels({pod_type_label: api_gateway_type_label}, node_labels={
             zone_label: client_node.labels[zone_label]})[0]
     client_gateway_node_name = client_gateway_node.node.name
-    client_gateway_zone = client_node.labels[zone_label]
 
     if client_gateway_node_name == gateway.node.name:
         # in case both are in the same -> then use average internal distance
@@ -346,7 +341,7 @@ def pressure_latency_req_log(parameters: PressureFunctionParameters, client_repl
         d_x_a = ctx.network_service.get_latency(client_gateway_node_name,
                                                 gateway.node.name)
 
-    d = latency_requirement - (latency_requirement * offset)
+    d = parameters.function_requirement - (parameters.function_requirement * offset)
 
     p_lat_a_x_f = logistic_curve(d_x_a, a, b, c, d) / a
 
@@ -567,7 +562,7 @@ def teardown_policy(
 
 
 def prepare_pressure_scale_schedule_events(deployment: FunctionDeployment, new_target_zone: str,
-                                          pressure_target_zone: str, local_scheduler_name: str, replica_factory,
+                                           pressure_target_zone: str, local_scheduler_name: str, replica_factory,
                                            now: Callable[[], float], no_of_replicas) -> PressureScaleScheduleEvent:
     replicas = []
     for _ in range(no_of_replicas):
@@ -620,3 +615,24 @@ def remove_zero_sum_actions(create_results: List[PressureScaleScheduleEvent],
         filter(lambda x: not is_zero_sum_action(create_events, x), delete_results))
     logger.info(f"zero sum actions were identified: {len(filtered_delete) != delete_results}")
     return filtered_delete
+
+
+def create_pressure_functions(parameters: PressureAutoscalerParameters) -> Dict[str, Dict[str, PressureFunction]]:
+    pressures_by_function = defaultdict(dict)
+    for fn, fn_parameters in parameters.function_parameters.items():
+        for pressure in fn_parameters.pressure_weights.keys():
+            pressures_by_function[fn][pressure] = make_pressure_function(pressure)
+    return pressures_by_function
+
+
+def make_pressure_function(pressure_type: str):
+    pressure_functions_list = [PressureRequestFunction, PressureNetworkLatencyFulfillmentFunction,
+                               PressureNormalizedNetworkLatencyFunction, PressureNetworkLatencyRequirementLogFunction,
+                               PressureCpuUsageFunction
+        , PressureRTTLogFunction]
+    pressure_functions_by_type = {}
+    for p in pressure_functions_list:
+        pressure_functions_by_type[p.name()] = p
+    if pressure_type not in pressure_functions_by_type:
+        raise ValueError(f"Invalid pressure type {pressure_type}")
+    return pressure_functions_by_type[pressure_type]

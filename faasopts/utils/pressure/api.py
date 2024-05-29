@@ -14,18 +14,20 @@ class PressureFunctionParameters:
     # this thresholds are used to determine functions under pressure
     max_threshold: float
     min_threshold: float
+    # determines the optimal value (i.e., upper limit) of how long requests should take
     function_requirement: float
     # either 'latency' (in ms) or 'rtt' (in s)
     target_time_measure: str
-    max_replicas: int
+    # the pressures here specified, are also used to calculate the pressure
+    # i.e., only specify pressures that should be used
     pressure_weights: Dict[str, float]
     a: float  # max
     b: float  # bottom
     c: float  # growth
     d: float
     offset: float  # offset of midpoint (values > 0 increase the y-value of the midpoint)
-    lookback: int
-    percentile_duration: float = 90
+    lookback: int  # monitoring to consider in the past <lookback> seconds
+    percentile_duration: float = 90  # used for RTT pressure as percentile for aggregation
     scale_up_rate: int = 1
 
     def copy(self):
@@ -34,7 +36,6 @@ class PressureFunctionParameters:
             self.min_threshold,
             self.function_requirement,
             self.target_time_measure,
-            self.max_replicas,
             copy.deepcopy(self.pressure_weights),
             self.a,
             self.b,
@@ -51,14 +52,15 @@ class PressureFunctionParameters:
 class PressureAutoscalerParameters:
     # parameters per function (i.e., key: function, value: parameters for scaling)
     function_parameters: Dict[str, PressureFunctionParameters]
-    max_latency: float
+    # used when handling local actions
+    local_scheduler_name: str
 
     def copy(self):
         copied_function_parameters = self.function_parameters
         for fn, parameters in self.function_parameters.items():
             copied_function_parameters[fn] = parameters.copy()
 
-        return PressureAutoscalerParameters(copied_function_parameters, self.max_latency)
+        return PressureAutoscalerParameters(copied_function_parameters, self.local_scheduler_name)
 
 
 @dataclass_json
