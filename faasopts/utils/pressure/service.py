@@ -2,8 +2,6 @@ import time
 from typing import List
 
 import pandas as pd
-import redis
-from galileofaas.connections import RedisClient
 
 
 class PressureService:
@@ -17,7 +15,7 @@ class PressureService:
 
 class K8sPressureService(PressureService):
 
-    def __init__(self, rds: RedisClient):
+    def __init__(self, rds):
         self.rds = rds
 
     def publish_pressure_values(self, pressure_values: pd.DataFrame, zone: str):
@@ -29,7 +27,7 @@ class K8sPressureService(PressureService):
         self.rds.publish_async(channel, msg)
 
     def wait_for_all_pressures(self, zones: List[str]) -> pd.DataFrame:
-        r: redis.Redis = self.rds._rds
+        r = self.rds._rds
         p = r.pubsub(ignore_subscribe_messages=True)
         for zone in zones:
             p.subscribe(f'pressure/{zone}')

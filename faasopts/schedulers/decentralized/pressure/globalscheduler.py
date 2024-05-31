@@ -112,7 +112,7 @@ class PressureGlobalScheduler(GlobalScheduler):
                                                                        pressure_per_zone)
             local_scheduler_name = self.storage_local_schedulers[new_target_zone]
             event = prepare_pressure_scale_schedule_events(deployment, new_target_zone=new_target_zone,
-                                                           pressure_target_zone=pressure_target_gateway.node.labels[
+                                                           pressure_origin_zone=pressure_target_gateway.node.labels[
                                                                zone_label],
                                                            local_scheduler_name=local_scheduler_name,
                                                            replica_factory=self.replica_factory, now=self.now,
@@ -149,13 +149,13 @@ class PressureGlobalScheduler(GlobalScheduler):
                 {pod_type_label: api_gateway_type_label}):
             gateway_node = gateway.node
             zone = gateway_node.labels[zone_label]
-            for deployment in ctx.deployment_service.get_deployments():
+            for fn in self.parameters[zone].function_parameters.keys():
                 try:
-                    mean_pressure = pressure_df.loc[deployment.name].loc[zone]['pressure']
-                    if len(pressure_df.loc[deployment.name]) == 0 or len(
-                            pressure_df.loc[deployment.name].loc[zone]) == 0:
+                    mean_pressure = pressure_df.loc[fn].loc[zone]['pressure']
+                    if len(pressure_df.loc[fn]) == 0 or len(
+                            pressure_df.loc[fn].loc[zone]) == 0:
                         continue
-                    if mean_pressure < self.parameters[zone].function_parameters[deployment.name].min_threshold:
+                    if mean_pressure < self.parameters[zone].function_parameters[fn].min_threshold:
                         pending_pods = ctx.replica_service.find_function_replicas_with_labels(
                             labels={
                                 function_label: deployment.fn_name,
@@ -168,13 +168,14 @@ class PressureGlobalScheduler(GlobalScheduler):
                         )
                         if len(pending_pods) > 0:
                             logger.info(
-                                f"Wanted to scale down FN {deployment.name} in zone {zone}, but had pending pods.")
+                                f"Wanted to scale down FN {fn} in zone {zone}, but had pending pods.")
                         else:
+                            deployment = ctx.deployment_service.get_by_name(fn)
                             not_under_pressure.append((gateway, deployment))
                 except KeyError:
-                    if deployment.labels.get(function_label, None) is not None:
-                        logger.info(f'No pressure values found for {zone} - {deployment} - try to shut down')
-                        not_under_pressure.append((gateway, deployment))
+                    logger.info(f'No pressure values found for {zone} - {fn} - try to shut down')
+                    deployment = ctx.deployment_service.get_by_name(fn)
+                    not_under_pressure.append((gateway, deployment))
         return not_under_pressure
 
     def teardown_policy(

@@ -33,6 +33,9 @@ class PressureResult:
     deployment: FunctionDeployment
     scale_down: bool
 
+    def __repr__(self):
+        return f"Target: {self.target_gateway.labels[zone_label]}, Origin: {self.origin_gateway.labels[zone_label]}, Deployment: {self.deployment.name}, ScaleDown: {self.scale_down}"
+
 
 def logistic_curve(x, a, b, c, d):
     """
@@ -183,25 +186,25 @@ def pressure_rtt_log(parameters: PressureFunctionParameters, client: str, client
     gateway_cluster = gateway.node.labels[zone_label]
     lookback_seconds_ago = now - parameters.lookback
     traces = ctx.trace_service.get_traces_for_function(fn, lookback_seconds_ago, now, gateway_cluster)
-
-    if len(traces) > 0:
+    traces = traces[~traces['client'].str.contains('load')]
+    if traces is not None and len(traces) > 0:
         # filter for client zone
         traces = traces[traces['origin_zone'] == client_gateway_cluster]
         traces = traces[traces['client'] == client]
         # percentile of rtt over all traces
         duration_agg = np.percentile(q=parameters.percentile_duration,
                                      a=traces[parameters.target_time_measure])
-        if parameters.target_time_measure == 'rtt':
-            # convert to ms
-            duration_agg *= 1000
+        if parameters.target_time_measure == 'latency':
+            # convert to s
+            duration_agg /= 1000
 
         d_moved = d - (d * offset)
 
-        p_lat_a_x_f = logistic_curve(duration_agg, a, b, c, d_moved) / a
+        p_rtt_a_x_f = logistic_curve(duration_agg, a, b, c, d_moved) / a
     else:
-        p_lat_a_x_f = 0
+        p_rtt_a_x_f = 0
 
-    return p_lat_a_x_f
+    return p_rtt_a_x_f
 
 
 def pressure_by_num_requests_for_gateway(client: str, fn: str, traces: pd.DataFrame) -> float:
@@ -396,7 +399,7 @@ def identify_above_max_pressure_deployments(pressure_values: pd.DataFrame, teard
     Returns a list of results that indicate where a new replica of a given function should be spawned
     """
     above_max_pressure = is_above_max_threshold(pressure_values, ctx, parameters)
-    logger.info(" under pressure_gateway %d", len(above_max_pressure))
+    logger.info(" under pressure_gateway %d - %s", len(above_max_pressure), str(above_max_pressure))
     above_max_pressure_filtered = []
     new_pods = defaultdict(int)
     for under_pressure in above_max_pressure:
@@ -473,16 +476,18 @@ def is_below_min_threshold(pressure_values: pd.DataFrame, ctx: PlatformContext,
             {pod_type_label: api_gateway_type_label}):
         gateway_node = gateway.node
         zone = gateway_node.labels[zone_label]
-        for deployment in ctx.deployment_service.get_deployments():
+        if parameters.get(zone) is None:
+            continue
+        for fn in parameters[zone].function_parameters.keys():
             try:
-                mean_pressure = pressure_df.loc[deployment.name].loc[zone]['pressure']
-                if len(pressure_df.loc[deployment.name]) == 0 or len(
-                        pressure_df.loc[deployment.name].loc[zone]) == 0:
+                mean_pressure = pressure_df.loc[fn].loc[zone]['pressure']
+                if len(pressure_df.loc[fn]) == 0 or len(
+                        pressure_df.loc[fn].loc[zone]) == 0:
                     continue
-                if mean_pressure < parameters[zone].function_parameters[deployment.name].min_threshold:
+                if mean_pressure < parameters[zone].function_parameters[fn].min_threshold:
                     pending_pods = ctx.replica_service.find_function_replicas_with_labels(
                         labels={
-                            function_label: deployment.fn_name,
+                            function_label: fn,
                         },
                         node_labels={
                             zone_label: zone
@@ -492,7 +497,7 @@ def is_below_min_threshold(pressure_values: pd.DataFrame, ctx: PlatformContext,
                     )
                     if len(pending_pods) > 0:
                         logger.info(
-                            f"Wanted to scale down FN {deployment.name} in zone {zone}, but had pending pods.")
+                            f"Wanted to scale down FN {fn} in zone {zone}, but had pending pods.")
                     else:
                         below_min_threshold.append(PressureResult(gateway, gateway, deployment, True))
             except KeyError:
@@ -562,12 +567,12 @@ def teardown_policy(
 
 
 def prepare_pressure_scale_schedule_events(deployment: FunctionDeployment, new_target_zone: str,
-                                           pressure_target_zone: str, local_scheduler_name: str, replica_factory,
+                                           pressure_origin_zone: str, local_scheduler_name: str, replica_factory,
                                            now: Callable[[], float], no_of_replicas) -> PressureScaleScheduleEvent:
     replicas = []
     for _ in range(no_of_replicas):
         replica = replica_factory.create_replica(
-            {worker_role_label: 'true', 'origin_zone': pressure_target_zone,
+            {worker_role_label: 'true', 'origin_zone': pressure_origin_zone,
              zone_label: new_target_zone, 'schedulerName': local_scheduler_name},
             deployment.deployment_ranking.get_first(), deployment)
         replicas.append(replica)
@@ -578,7 +583,7 @@ def prepare_pressure_scale_schedule_events(deployment: FunctionDeployment, new_t
         ts=time_time,
         fn=deployment.name,
         replicas=replicas,
-        origin_zone=pressure_target_zone,
+        origin_zone=pressure_origin_zone,
         target_zone=new_target_zone,
         delete=False
     )
@@ -626,10 +631,10 @@ def create_pressure_functions(parameters: PressureAutoscalerParameters) -> Dict[
 
 
 def make_pressure_function(pressure_type: str):
-    pressure_functions_list = [PressureRequestFunction, PressureNetworkLatencyFulfillmentFunction,
-                               PressureNormalizedNetworkLatencyFunction, PressureNetworkLatencyRequirementLogFunction,
-                               PressureCpuUsageFunction
-        , PressureRTTLogFunction]
+    pressure_functions_list = [PressureRequestFunction(), PressureNetworkLatencyFulfillmentFunction(),
+                               PressureNormalizedNetworkLatencyFunction(),
+                               PressureNetworkLatencyRequirementLogFunction(),
+                               PressureCpuUsageFunction(), PressureRTTLogFunction()]
     pressure_functions_by_type = {}
     for p in pressure_functions_list:
         pressure_functions_by_type[p.name()] = p

@@ -57,9 +57,9 @@ class PressureK8sGlobalScheduler:
                     scale_ups[scale.fn].extend(scale.replicas)
             faas: FaasSystem = self.faas
             for fn, replicas in scale_ups.items():
-                yield from faas.scale_up(fn, replicas)
+                faas.scale_up(fn, replicas)
             for fn, replicas in scale_downs.items():
-                yield from faas.scale_down(fn, replicas)
+                faas.scale_down(fn, replicas)
 
 
         logger.info("End scheduling %s" % self.scheduler_name)
