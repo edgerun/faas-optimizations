@@ -71,6 +71,7 @@ class PressureAutoscaler(BaseAutoscaler):
                 # we only want to resolve pressure results that are above if the violation originates from the zone
                 # that the autoscaler observes
                 local_teardowns_per_fn[result.deployment.name].append(result)
+
         actions = []
         for fn, results in local_teardowns_per_fn.items():
             for result in results:

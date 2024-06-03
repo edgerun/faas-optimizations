@@ -70,8 +70,7 @@ class PressureGlobalScheduler(GlobalScheduler):
         for result in delete_results:
             teardowns[result.fn] += 1
 
-        # Figure out up scaling actions, previous generated ids for intermediate results are passed in each replica as
-        # labels
+
         create_results = self.get_scale_up_actions(pressure_values, teardowns)
         delete_results = remove_zero_sum_actions(create_results, delete_results)
 

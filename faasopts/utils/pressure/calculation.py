@@ -434,22 +434,25 @@ def is_above_max_threshold(pressure_per_gateway: pd.DataFrame, ctx: PlatformCont
             {pod_type_label: api_gateway_type_label}):
         gateway_node = gateway.node
         zone = gateway_node.labels[zone_label]
-        for deployment in ctx.deployment_service.get_deployments():
+        if parameters.get(zone) is None:
+            continue
+        for fn in parameters[zone].function_parameters.keys():
             for client_zone in ctx.zone_service.get_zones():
                 # client zone = x
                 # check if pressure from x on a is too high, if yes -> try to schedule instance in x!
                 try:
-                    mean_pressure = pressure_per_gateway.loc[deployment.name]
+                    mean_pressure = pressure_per_gateway.loc[fn]
                     if len(mean_pressure) == 0 or len(mean_pressure.loc[zone]) == 0 or len(
                             mean_pressure.loc[zone].loc[client_zone]) == 0:
                         continue
                     mean_pressure = mean_pressure.loc[zone].loc[client_zone][
                         'pressure']
-                    if mean_pressure > parameters[zone].function_parameters[deployment.name].max_threshold:
+                    if mean_pressure > parameters[zone].function_parameters[fn].max_threshold:
                         # at this point we know where the origin for the high pressure comes from
                         target_gateway = ctx.replica_service.find_function_replicas_with_labels(
                             labels={pod_type_label: api_gateway_type_label},
                             node_labels={zone_label: client_zone})[0]
+                        deployment = ctx.deployment_service.get_by_name(fn)
                         under_pressure.append(PressureResult(target_gateway, gateway, deployment, False))
                 except KeyError:
                     pass
