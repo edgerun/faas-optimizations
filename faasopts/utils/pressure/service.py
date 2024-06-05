@@ -1,13 +1,19 @@
-import time
+import json
 from typing import List
 
 import pandas as pd
+from faas.system import Metrics
 
 
 class PressureService:
 
+    def __init__(self, metrics: Metrics):
+        self.metrics = metrics
+
     def publish_pressure_values(self, pressure_values: pd.DataFrame, zone: str):
-        raise NotImplementedError()
+        value = {'value': pressure_values.to_dict()}
+        metric = f'pressure/{zone}'
+        self.metrics.log(metric, value)
 
     def wait_for_all_pressures(self, zones: List[str]) -> pd.DataFrame:
         raise NotImplementedError()
@@ -15,16 +21,9 @@ class PressureService:
 
 class K8sPressureService(PressureService):
 
-    def __init__(self, rds):
+    def __init__(self, metrics: Metrics, rds):
+        super().__init__(metrics)
         self.rds = rds
-
-    def publish_pressure_values(self, pressure_values: pd.DataFrame, zone: str):
-        ts = time.time()
-        channel = 'galileo/events'
-        event = f'pressure/{zone}'
-        body = pressure_values.to_json()
-        msg = f'{ts} {event} {body}'
-        self.rds.publish_async(channel, msg)
 
     def wait_for_all_pressures(self, zones: List[str]) -> pd.DataFrame:
         r = self.rds._rds
@@ -35,7 +34,8 @@ class K8sPressureService(PressureService):
         for item in p.listen():
             if item['type'] == 'message':
                 result = item['data'].split(' ')[-1]
-                result_df = pd.read_json(result)
+                result = json.loads(result)['value']
+                result_df = pd.DataFrame(result)
                 results.append(result_df)
 
                 if len(results) == 3:

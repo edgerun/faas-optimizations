@@ -157,7 +157,7 @@ class PressureGlobalScheduler(GlobalScheduler):
                     if mean_pressure < self.parameters[zone].function_parameters[fn].min_threshold:
                         pending_pods = ctx.replica_service.find_function_replicas_with_labels(
                             labels={
-                                function_label: deployment.fn_name,
+                                function_label: fn,
                             },
                             node_labels={
                                 zone_label: zone

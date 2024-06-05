@@ -46,6 +46,8 @@ class PressureK8sGlobalScheduler:
         logger.info("Start scheduling %s" % self.scheduler_name)
         while self.running:
             pressure_values = self.pressure_service.wait_for_all_pressures(self.zones)
+            # we only want pressure values that have not been resolved yet
+            pressure_values = pressure_values[pressure_values['solved'] == 0]
             scale_schedule_events = self.global_scheduler.find_clusters_for_autoscaler_decisions(pressure_values)
             scale_ups: Dict[str, List[FunctionReplica]] = defaultdict(list)
             scale_downs: Dict[str, List[FunctionReplica]] = defaultdict(list)

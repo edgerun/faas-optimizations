@@ -12,6 +12,7 @@ from faasopts.utils.infrastructure.filter import get_filtered_nodes_in_zone
 from faasopts.utils.pressure.api import PressureAutoscalerParameters, PressureScaleScheduleEvent
 from faasopts.utils.pressure.calculation import PressureInput, identify_above_max_pressure_deployments, \
     is_below_min_threshold, prepare_pressure_scale_schedule_events, create_pressure_functions
+from faasopts.utils.pressure.service import PressureService
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class PressureAutoscaler(BaseAutoscaler):
     def __init__(self, ctx: PlatformContext, parameters: PressureAutoscalerParameters,
                  zone: str,
                  replica_factory: FunctionReplicaFactory, now: Callable[[], float],
-                 metrics: Metrics):
+                 metrics: Metrics, pressure_service: PressureService):
         self.ctx = ctx
         self.parameters = parameters
         self.zone = zone
@@ -30,6 +31,7 @@ class PressureAutoscaler(BaseAutoscaler):
         self.pressure_functions = create_pressure_functions(parameters)
         self.metrics = metrics
         self.local_scheduler_name = parameters.local_scheduler_name
+        self.pressure_service = pressure_service
 
     def run(self) -> Optional[pd.DataFrame]:
         ctx = self.ctx
@@ -38,6 +40,9 @@ class PressureAutoscaler(BaseAutoscaler):
             logger.info("No pressure values calculated, no further execution")
             return None
         # Store calculated pressure values such that global scheduler can retrieve it
+        pressure_values['solved'] = 0
+        logger.info("Publishing pressure")
+        self.pressure_service.publish_pressure_values(pressure_values, self.zone)
         return pressure_values
 
     def find_local_scale_actions(self, pressure_values: pd.DataFrame) -> List[PressureScaleScheduleEvent]:
