@@ -316,16 +316,16 @@ class RoundRobinWeightCalculator(WeightCalculator):
 
 class WrrOptimizer(LocalizedLoadBalancerOptimizer):
 
-    def __init__(self, context: PlatformContext, zone: str, metrics: Metrics,
+    def __init__(self, context: PlatformContext, cluster: str, metrics: Metrics,
                  weight_calculator: WeightCalculator) -> None:
-        super().__init__(context, zone)
+        super().__init__(context, cluster)
         self.metrics = metrics
         self.weight_calculator = weight_calculator
         # context.replica_service.register(self.observer)
 
     def update(self):
         weights = self.calculate_weights()
-        self.metrics.log('wrr-weights', self.zone, **weights)
+        self.metrics.log('wrr-weights', self.cluster, **weights)
         self.set_weights(weights)
 
     def _get_function(self, replica: FunctionReplica) -> List[Tuple[str, FunctionReplica]]:
@@ -334,10 +334,10 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
         if replica.labels.get(pod_type_label) is None:
             return []
         if replica.labels[pod_type_label] == function_type_label:
-            if replica.node.zone != self.zone:
-                # function replica but not running in same zone, we have to add load balancer of the other zone
+            if replica.node.cluster != self.cluster:
+                # function replica but not running in same cluster, we have to add load balancer of the other cluster
                 node_labels = {
-                    zone_label: replica.node.zone
+                    zone_label: replica.node.cluster
                 }
                 labels = {
                     pod_type_label: api_gateway_type_label
@@ -345,22 +345,22 @@ class WrrOptimizer(LocalizedLoadBalancerOptimizer):
                 replicas = self.context.replica_service.find_function_replicas_with_labels(labels=labels,
                                                                                            node_labels=node_labels,
                                                                                            state=FunctionReplicaState.RUNNING)
-                # we assume that only one load balancer runs per zone
+                # we assume that only one load balancer runs per cluster
                 if len(replicas) == 0:
                     return []
                 lb_replica = replicas[0]
                 return [(replica.function.name, lb_replica)]
             else:
-                # function replica in same zone
+                # function replica in same cluster
                 return [(replica.function.name, replica)]
         if replica.labels[pod_type_label] == api_gateway_type_label:
-            if replica.node.zone == self.zone:
-                # we ignore replicas that are load balancers running in the same zone (-> it would just add itself)
+            if replica.node.cluster == self.cluster:
+                # we ignore replicas that are load balancers running in the same cluster (-> it would just add itself)
                 return []
-            # check if in the load balancer's zone there exists function replicas
+            # check if in the load balancer's cluster there exists function replicas
             # and return all functions that have an instance running
             node_labels = {
-                zone_label: replica.node.zone
+                zone_label: replica.node.cluster
             }
             labels = {
                 pod_type_label: function_type_label
