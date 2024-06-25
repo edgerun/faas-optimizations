@@ -482,6 +482,7 @@ def is_below_min_threshold(pressure_values: pd.DataFrame, ctx: PlatformContext,
         if parameters.get(zone) is None:
             continue
         for fn in parameters[zone].function_parameters.keys():
+            deployment = ctx.deployment_service.get_by_name(fn)
             try:
                 mean_pressure = pressure_df.loc[fn].loc[zone]['pressure']
                 if len(pressure_df.loc[fn]) == 0 or len(
@@ -502,7 +503,7 @@ def is_below_min_threshold(pressure_values: pd.DataFrame, ctx: PlatformContext,
                         logger.info(
                             f"Wanted to scale down FN {fn} in zone {zone}, but had pending pods.")
                     else:
-                        below_min_threshold.append(PressureResult(gateway, gateway, fn, True))
+                        below_min_threshold.append(PressureResult(gateway, gateway, deployment, True))
             except KeyError:
                 if deployment.labels.get(function_label, None) is not None:
                     logger.info(f'No pressure values found for {zone} - {deployment} - try to shut down')
