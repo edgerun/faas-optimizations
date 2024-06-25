@@ -82,6 +82,8 @@ class PressureAutoscaler(BaseAutoscaler):
             for result in results:
                 scale_down_rate = 1
                 teardown_replicas = self.select_teardown_replicas(fn, scale_down_rate)
+                if teardown_replicas is None:
+                    continue
                 actions.append(PressureScaleScheduleEvent(
                     ts=self.now(),
                     fn=fn,
@@ -275,6 +277,10 @@ class PressureAutoscaler(BaseAutoscaler):
     def select_teardown_replicas(self, fn: str, no_to_teardown: int):
         replicas = self.ctx.replica_service.find_function_replicas_with_labels(
             {function_label: fn}, node_labels={zone_label: self.zone})
+        if len(replicas) == 1:
+            # we should not scale to 0 on a local level as we do not know whether other zones
+            # still host it
+            return None
         return replicas[:no_to_teardown]
 
     def replica_fits(self, replica: FunctionReplica, zone: str):
