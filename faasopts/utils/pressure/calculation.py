@@ -187,11 +187,11 @@ def pressure_rtt_log(parameters: PressureFunctionParameters, client: str, client
     lookback_seconds_ago = now - parameters.lookback
     traces = ctx.trace_service.get_traces_for_function(fn, lookback_seconds_ago, now, gateway_cluster)
     traces = traces[~traces['client'].str.contains('load')]
+    # filter for client zone
+    traces = traces[traces['origin_zone'] == client_gateway_cluster]
+    traces = traces[traces['client'] == client]
     if traces is not None and len(traces) > 0:
-        # filter for client zone
-        traces = traces[traces['origin_zone'] == client_gateway_cluster]
-        traces = traces[traces['client'] == client]
-        # percentile of rtt over all traces
+        # percentile of rtt over all traces 
         duration_agg = np.percentile(q=parameters.percentile_duration,
                                      a=traces[parameters.target_time_measure])
         if parameters.target_time_measure == 'latency':

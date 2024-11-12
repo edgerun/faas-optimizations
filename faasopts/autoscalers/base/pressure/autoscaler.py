@@ -125,6 +125,10 @@ class PressureAutoscaler(BaseAutoscaler):
             now = self.now()
             past = now - fn_parameters.lookback
             traces = ctx.trace_service.get_traces_api_gateway(gateway.node.name, past, now, response_status=200)
+            if traces is None:
+                logger.info(f'Found no traces for gateway on node {gateway.node.name}')
+                return None
+
             traces = traces[~traces['client'].str.contains('load')]
             traces = traces[traces['function'] == function]
             gateway_node = ctx.node_service.find(gateway.node.name)

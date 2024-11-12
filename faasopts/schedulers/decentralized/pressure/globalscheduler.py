@@ -277,10 +277,13 @@ class PressureGlobalScheduler(GlobalScheduler):
                     continue
                 other_gateway = self.ctx.replica_service.find_function_replicas_with_labels(
                     {pod_type_label: api_gateway_type_label}, node_labels={zone_label: other_zone})[0]
-                other_node = other_gateway.nodeName
+                other_node = other_gateway.node.name
                 node = target_gateway.node.name
                 latency = self.ctx.network_service.get_latency(other_node, node)
-                df = pressure_values_by_fn_by_zone[pressure_values_by_fn_by_zone['fn'] == deployment.name]
+                fn = pressure_values_by_fn_by_zone.get("fn")
+                if fn is None:
+                    continue
+                df = pressure_values_by_fn_by_zone[fn == deployment.name]
                 df = df[df['client_zone'] == target_zone]
                 df = df[df['fn_zone'] == other_zone]
                 if len(df) == 0:
