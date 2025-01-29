@@ -62,8 +62,8 @@ def nodes_available_in_zone(ctx: PlatformContext, min_cores_required: int, min_m
         if type(node_memory) is str:
             node_memory = parse_size_string(node_memory)
 
-        enough_memory = (memory_reserved + min_memory_required) < node_memory
-        enough_cores = cpu_reserved + min_cores_required < node_cores
+        enough_memory = (memory_reserved + min_memory_required) <= node_memory
+        enough_cores = cpu_reserved + min_cores_required <= node_cores
         has_enough_resources = enough_cores and enough_memory
         if has_enough_resources:
             ready_nodes.append(node_name)
@@ -103,8 +103,8 @@ def nodes_available(ctx: PlatformContext, min_cores_required: int, min_memory_re
         node_memory = node.allocatable['memory']
         if type(node_memory) is str:
             node_memory = parse_size_string(node_memory)
-        enough_memory = (memory_reserved + min_memory_required) < node_memory
-        enough_cores = cpu_reserved + min_cores_required < node_cores
+        enough_memory = (memory_reserved + min_memory_required) <= node_memory
+        enough_cores = cpu_reserved + min_cores_required <= node_cores
 
         has_enough_resources = enough_cores and enough_memory
         if has_enough_resources:
