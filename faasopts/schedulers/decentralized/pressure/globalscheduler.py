@@ -109,14 +109,17 @@ class PressureGlobalScheduler(GlobalScheduler):
 
             scheduler, new_target_zone = self.global_scheduling_policy(deployment, pressure_target_gateway,
                                                                        pressure_per_zone)
-            local_scheduler_name = self.storage_local_schedulers[new_target_zone]
-            event = prepare_pressure_scale_schedule_events(deployment, new_target_zone=new_target_zone,
-                                                           pressure_origin_zone=pressure_target_gateway.node.labels[
-                                                               zone_label],
-                                                           local_scheduler_name=local_scheduler_name,
-                                                           replica_factory=self.replica_factory, now=self.now,
-                                                           no_of_replicas=scale_up_rate)
-            events.append(event)
+            if scheduler == "" and new_target_zone == "":
+                logger.warning(f'Failed to schedule replica, no nodes for scheduling available anymore.')
+            else:
+                local_scheduler_name = self.storage_local_schedulers[new_target_zone]
+                event = prepare_pressure_scale_schedule_events(deployment, new_target_zone=new_target_zone,
+                                                               pressure_origin_zone=pressure_target_gateway.node.labels[
+                                                                   zone_label],
+                                                               local_scheduler_name=local_scheduler_name,
+                                                               replica_factory=self.replica_factory, now=self.now,
+                                                               no_of_replicas=scale_up_rate)
+                events.append(event)
         return events
 
     def get_scale_down_actions(self, pressure_values: pd.DataFrame) -> List[PressureScaleScheduleEvent]:
@@ -265,7 +268,7 @@ class PressureGlobalScheduler(GlobalScheduler):
         nodes_in_cluster_available = get_filtered_nodes_in_zone(self.ctx, replica, target_zone)
         if len(nodes_in_cluster_available) > 0:
             found_scheduler = self.storage_local_schedulers[target_zone]
-            logger.info("found scheduler: {} for replica {}".format(found_scheduler, replica.replica_id))
+            logger.info("cfound scheduler: {} for replica {}".format(found_scheduler, replica.replica_id))
             return found_scheduler, target_zone
         else:
             # otherwise we have to go through neighboring zones which can host the app
@@ -304,7 +307,7 @@ class PressureGlobalScheduler(GlobalScheduler):
                     # check if new target has enough resources
                     if len(get_filtered_nodes_in_zone(self.ctx, replica, target_zone)) > 0:
                         found_scheduler = self.storage_local_schedulers[target_zone]
-                        logger.info("found scheduler: {} for replica {}".format(found_scheduler, replica.replica_id))
+                        logger.info("afound scheduler: {} for replica {}".format(found_scheduler, replica.replica_id))
                         return found_scheduler, target_zone
 
             # in case no zone fulfills above requirements, look for nearest that can host
@@ -312,7 +315,7 @@ class PressureGlobalScheduler(GlobalScheduler):
                 target_zone = t[2]
                 if len(get_filtered_nodes_in_zone(self.ctx, replica, target_zone)):
                     found_scheduler = self.storage_local_schedulers[target_zone]
-                    logger.info("found scheduler: {} for replica {}".format(found_scheduler, replica.replica_id))
+                    logger.info("bfound scheduler: {} for replica {}".format(found_scheduler, replica.replica_id))
                     return found_scheduler, target_zone
 
             # this error happens in case basically all resources are  used

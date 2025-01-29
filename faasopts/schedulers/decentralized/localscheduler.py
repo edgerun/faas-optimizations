@@ -67,6 +67,9 @@ class LocalCpuScheduler(LocalScheduler):
                     cpus.append((node, cpu))
             cpus.sort(key=lambda x: x[1])
             logger.info(cpus)
+            if len(cpus) == 0:
+                # this happens if a node is available but not eligible for scheduling
+                return None
             node = cpus[0][0]
             return node
         return None
