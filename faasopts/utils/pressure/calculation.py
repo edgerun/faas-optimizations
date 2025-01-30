@@ -186,6 +186,8 @@ def pressure_rtt_log(parameters: PressureFunctionParameters, client: str, client
     gateway_cluster = gateway.node.labels[zone_label]
     lookback_seconds_ago = now - parameters.lookback
     traces = ctx.trace_service.get_traces_for_function(fn, lookback_seconds_ago, now, gateway_cluster)
+    if traces is None:
+        return 0
     traces = traces[~traces['client'].str.contains('load')]
     # filter for client zone
     traces = traces[traces['origin_zone'] == client_gateway_cluster]
