@@ -241,14 +241,14 @@ class PressureGlobalScheduler(GlobalScheduler):
         FunctionReplica]:
         cpus = []
         for replica in replicas:
-            lookback = self.parameters[replica.labels[zone_label]].function_parameters[replica.function.name].lookback
-            start = datetime.datetime.now() - datetime.timedelta(seconds=lookback)
-            end = datetime.datetime.now()
             try:
+                lookback = self.parameters[replica.labels[zone_label]].function_parameters[replica.function.name].lookback
+                start = datetime.datetime.now() - datetime.timedelta(seconds=lookback)
+                end = datetime.datetime.now()
                 cpu = ctx.telemetry_service.get_replica_cpu(replica.replica_id, start.timestamp(), end.timestamp())[
                     'percentage'].mean()
                 cpus.append((replica, cpu))
-            except TypeError as e:
+            except Exception as e:
                 logger.error(e)
 
         cpus.sort(key=lambda x: x[1])
